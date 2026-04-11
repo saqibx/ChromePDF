@@ -154,12 +154,14 @@ export async function exportToPDF(
   }
 
   const workspacePayload = createWorkspacePayload(annotations, documentName);
-  pdfDoc.setKeywords(['source:chromepdf', `chromepdf:workspace:v1`]);
 
-  await pdfDoc.attach(JSON.stringify(workspacePayload), CHROMEPDF_WORKSPACE_FILENAME, {
-    mimeType: 'application/json',
-    description: 'ChromePDF workspace metadata',
-  });
+  // Store workspace JSON as base64 in keywords — plain text, no compression,
+  // reliably readable by pdf-lib's getKeywords() without any stream decoding.
+  const workspaceJson = JSON.stringify(workspacePayload);
+  const workspaceB64 = uint8ArrayToBase64(new TextEncoder().encode(workspaceJson));
+  pdfDoc.setKeywords(['source:chromepdf', `chromepdf-workspace:${workspaceB64}`]);
+
+  // Store original PDF as embedded file for recovery
   await pdfDoc.attach(pdfBytes, CHROMEPDF_SOURCE_FILENAME, {
     mimeType: 'application/pdf',
     description: 'Original PDF source for ChromePDF workspace recovery',
@@ -179,6 +181,14 @@ export async function exportToPDF(
   link.click();
   document.body.removeChild(link);
   URL.revokeObjectURL(url);
+}
+
+function uint8ArrayToBase64(bytes: Uint8Array): string {
+  let binary = '';
+  for (let i = 0; i < bytes.byteLength; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
 }
 
 function clonePdfBytes(sourcePdfBytes: ArrayBuffer | Uint8Array): Uint8Array {
