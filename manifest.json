@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "ChromePDF",
+  "version": "1.0",
+  "permissions": ["activeTab", "tabs", "storage"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "Open PDF Viewer"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_end"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["viewer.html", "assets/*"],
+      "matches": ["<all_urls>"]
+    }
+  ]
+}

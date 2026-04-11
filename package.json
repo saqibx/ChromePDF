@@ -1,0 +1,24 @@
+{
+  "name": "chromepdf",
+  "version": "1.0.0",
+  "description": "Chrome extension for PDF annotation with highlights and notes",
+  "type": "module",
+  "scripts": {
+    "dev": "vite build",
+    "build": "tsc && vite build && cp manifest.json dist/ && cp src/content.js dist/ && cp src/background.js dist/",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "pdf-lib": "^1.17.1",
+    "pdfjs-dist": "^4.9.155",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.7"
+  }
+}
