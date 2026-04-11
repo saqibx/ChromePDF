@@ -57,8 +57,10 @@ export const PDFPage: React.FC<PDFPageProps> = ({
         if (cancelled || !textLayerRef.current) return;
 
         textLayerRef.current.innerHTML = '';
-        textLayerRef.current.style.width = `${viewport.width}px`;
-        textLayerRef.current.style.height = `${viewport.height}px`;
+        // pdfjs-dist v4 uses calc(var(--scale-factor) * Npx) for ALL span
+        // positions and font sizes. Without this variable every span collapses
+        // to 0px and stacks at the origin, making text unselectable.
+        textLayerRef.current.style.setProperty('--scale-factor', viewport.scale.toString());
 
         const textLayer = new TextLayer({
           textContentSource: content,
@@ -67,10 +69,6 @@ export const PDFPage: React.FC<PDFPageProps> = ({
         });
 
         textLayer.render();
-
-        textLayerRef.current.querySelectorAll('.endOfLine').forEach(el => {
-          el.textContent = ' ';
-        });
       });
     });
 
@@ -107,7 +105,7 @@ export const PDFPage: React.FC<PDFPageProps> = ({
             opacity: 0.5;
             cursor: pointer;
             z-index: 2;
-            ${activeAnnotationId === ann.id ? 'box-shadow: 0 0 0 2px #2196F3;' : ''}
+            ${activeAnnotationId === ann.id ? 'box-shadow: 0 0 0 2px #8a4e85, inset 0 0 0 1px rgba(87,47,83,0.4);' : ''}
           `;
           highlightEl.dataset.annotationId = ann.id;
           highlightEl.addEventListener('click', (e) => {
@@ -144,13 +142,7 @@ export const PDFPage: React.FC<PDFPageProps> = ({
       <div
         ref={textLayerRef}
         className="text-layer"
-        style={{
-          position: 'absolute',
-          top: 0,
-          left: 0,
-          pointerEvents: 'auto',
-          zIndex: 1
-        }}
+        style={{ zIndex: 1 }}
         onMouseUp={handleMouseUp}
       />
       <div
@@ -165,18 +157,7 @@ export const PDFPage: React.FC<PDFPageProps> = ({
         }}
       />
       {rendering && (
-        <div style={{
-          position: 'absolute',
-          top: '50%',
-          left: '50%',
-          transform: 'translate(-50%, -50%)',
-          background: 'rgba(0,0,0,0.5)',
-          color: 'white',
-          padding: '10px 20px',
-          borderRadius: '4px'
-        }}>
-          Rendering...
-        </div>
+        <div className="page-rendering-overlay">Rendering…</div>
       )}
     </div>
   );

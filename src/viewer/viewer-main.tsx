@@ -35,7 +35,7 @@ function UploadView({ onFileSelect }: { onFileSelect: (buffer: ArrayBuffer) => v
   }, [onFileSelect]);
 
   return (
-    <div className="drop-zone-container" style={{ padding: '40px', textAlign: 'center' }}>
+    <div className="drop-zone-container">
       <div
         className={`drop-zone ${dragging ? 'dragging' : ''}`}
         onDragOver={(e) => { e.preventDefault(); setDragging(true); }}

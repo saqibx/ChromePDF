@@ -13,186 +13,176 @@ export async function exportToPDF(
   const helvetica = await pdfDoc.embedFont(StandardFonts.Helvetica);
   const helveticaBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
 
-  const MARGIN_NOTE_WIDTH = 200;
-  const PAGE_MARGIN = 20;
-  const NOTE_HEADER_HEIGHT = 30;
-  const NOTE_LINE_HEIGHT = 12;
-  const NOTE_PADDING = 10;
+  const SIDEBAR_WIDTH = 220;
+  const MARGIN = 14;
+  const QUOTE_SIZE = 7.5;
+  const NOTE_SIZE = 8.5;
+  const LINE_HEIGHT = 11;
 
   for (let pageNum = 1; pageNum <= sourcePdf.numPages; pageNum++) {
     const page = await sourcePdf.getPage(pageNum);
     const viewport = page.getViewport({ scale });
-    const originalWidth = viewport.width;
-    const originalHeight = viewport.height;
+    const pageW = viewport.width;
+    const pageH = viewport.height;
 
-    const newPageWidth = originalWidth + MARGIN_NOTE_WIDTH;
-    const newPage = pdfDoc.addPage([newPageWidth, originalHeight]);
+    const newPage = pdfDoc.addPage([pageW + SIDEBAR_WIDTH, pageH]);
 
-    newPage.drawRectangle({
-      x: 0,
-      y: 0,
-      width: newPageWidth,
-      height: originalHeight,
-      color: rgb(1, 1, 1),
+    // White background
+    newPage.drawRectangle({ x: 0, y: 0, width: pageW + SIDEBAR_WIDTH, height: pageH, color: rgb(1, 1, 1) });
+
+    // Render PDF page to canvas
+    const canvas = document.createElement('canvas');
+    canvas.width = pageW;
+    canvas.height = pageH;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) continue;
+    await page.render({ canvasContext: ctx, viewport }).promise;
+
+    const pngImage = await pdfDoc.embedPng(canvas.toDataURL('image/png'));
+    // PDF-lib drawImage: bottom-left corner at (0,0), image renders right-side-up
+    newPage.drawImage(pngImage, { x: 0, y: 0, width: pageW, height: pageH });
+
+    // Divider line
+    newPage.drawLine({
+      start: { x: pageW, y: 0 },
+      end: { x: pageW, y: pageH },
+      thickness: 0.5,
+      color: rgb(0.8, 0.8, 0.8),
     });
 
     const pageAnnotations = annotations.filter(a => a.pageNumber === pageNum);
 
-    const dividerX = originalWidth;
-    newPage.drawLine({
-      start: { x: dividerX, y: 0 },
-      end: { x: dividerX, y: originalHeight },
-      thickness: 1,
-      color: rgb(0.9, 0.9, 0.9),
-    });
-
-    const canvas = document.createElement('canvas');
-    canvas.width = originalWidth;
-    canvas.height = originalHeight;
-    const context = canvas.getContext('2d');
-    if (!context) continue;
-
-    await page.render({ canvasContext: context, viewport }).promise;
-
-    const imgData = canvas.toDataURL('image/png');
-    const pngImage = await pdfDoc.embedPng(imgData);
-
-    newPage.drawImage(pngImage, {
-      x: 0,
-      y: 0,
-      width: originalWidth,
-      height: originalHeight,
-    });
-
+    // ── Draw highlights ──────────────────────────────────────────────────────
+    // Stored rects: x/y/width/height are 0-100 as % of canvas dimensions.
+    // Canvas origin = top-left (y down); PDF-lib origin = bottom-left (y up).
+    // drawRectangle takes the BOTTOM-LEFT corner in PDF-lib space:
+    //   pdfY_bottomLeft = pageH - canvasY_top - rectH
     for (const ann of pageAnnotations) {
-      const avgY = ann.highlightRects.reduce((sum, r) => sum + r.y, 0) / ann.highlightRects.length;
-      const normalizedY = avgY / 100;
+      const color = hexToRgb(ann.color);
+      for (const rect of ann.highlightRects) {
+        const rx = (rect.x / 100) * pageW;
+        const ry = (rect.y / 100) * pageH;       // canvas y from top
+        const rw = (rect.width / 100) * pageW;
+        const rh = Math.max((rect.height / 100) * pageH, 1);
 
-      const highlightX = (ann.highlightRects[0]?.x || 0) / 100 * scale;
-      const highlightW = (ann.highlightRects[0]?.width || 50) / 100 * scale;
-
-      newPage.drawRectangle({
-        x: highlightX,
-        y: normalizedY * scale,
-        width: highlightW,
-        height: 12,
-        color: hexToRgb(ann.color),
-        opacity: 0.4,
-      });
-
-      const noteX = dividerX + PAGE_MARGIN;
-      let noteY = normalizedY * scale;
-
-      newPage.drawRectangle({
-        x: noteX,
-        y: noteY - NOTE_PADDING,
-        width: MARGIN_NOTE_WIDTH - PAGE_MARGIN * 2,
-        height: NOTE_HEADER_HEIGHT + (ann.noteText ? getTextHeight(ann.noteText, helvetica, MARGIN_NOTE_WIDTH - PAGE_MARGIN * 2 - NOTE_PADDING * 2, NOTE_LINE_HEIGHT) * NOTE_LINE_HEIGHT + NOTE_PADDING : NOTE_HEADER_HEIGHT),
-        borderColor: hexToRgb(ann.color),
-        borderWidth: 1,
-        opacity: 0.1,
-      });
-
-      newPage.drawText(`Page ${ann.pageNumber}`, {
-        x: noteX + NOTE_PADDING,
-        y: noteY,
-        size: 8,
-        font: helveticaBold,
-        color: rgb(0.4, 0.4, 0.4),
-      });
-
-      noteY -= NOTE_HEADER_HEIGHT + NOTE_PADDING;
-
-      if (ann.noteText) {
-        const lines = wrapText(ann.noteText, helvetica, NOTE_LINE_HEIGHT, MARGIN_NOTE_WIDTH - PAGE_MARGIN * 2 - NOTE_PADDING * 2);
-        for (const line of lines) {
-          newPage.drawText(line, {
-            x: noteX + NOTE_PADDING,
-            y: noteY,
-            size: 9,
-            font: helvetica,
-            color: rgb(0.2, 0.2, 0.2),
-          });
-          noteY -= NOTE_LINE_HEIGHT;
-        }
-      } else {
-        newPage.drawText('(No note)', {
-          x: noteX + NOTE_PADDING,
-          y: noteY,
-          size: 9,
-          font: helvetica,
-          color: rgb(0.6, 0.6, 0.6),
+        newPage.drawRectangle({
+          x: rx,
+          y: pageH - ry - rh,                    // flip y-axis for PDF-lib
+          width: rw,
+          height: rh,
+          color,
+          opacity: 0.35,
         });
       }
+    }
 
-      newPage.drawLine({
-        start: { x: dividerX, y: normalizedY * scale },
-        end: { x: dividerX + MARGIN_NOTE_WIDTH * 0.3, y: normalizedY * scale },
-        thickness: 0.5,
-        color: hexToRgb(ann.color),
-        opacity: 0.6,
+    // ── Sidebar notes ────────────────────────────────────────────────────────
+    let cursorY = pageH - MARGIN;
+
+    for (const ann of pageAnnotations) {
+      const color = hexToRgb(ann.color);
+      const noteX = pageW + MARGIN;
+      const noteW = SIDEBAR_WIDTH - MARGIN * 2;
+
+      const quoteLines = wrapText(`"${ann.selectedText}"`, helvetica, QUOTE_SIZE, noteW);
+      const bodyLines = ann.noteText
+        ? wrapText(ann.noteText, helvetica, NOTE_SIZE, noteW)
+        : [];
+
+      const blockH =
+        MARGIN / 2 +
+        quoteLines.length * (QUOTE_SIZE + 2) +
+        (bodyLines.length ? 4 + bodyLines.length * LINE_HEIGHT : 0) +
+        MARGIN / 2;
+
+      if (cursorY - blockH < MARGIN) break;
+
+      // Background box
+      newPage.drawRectangle({
+        x: noteX - 4,
+        y: cursorY - blockH,
+        width: noteW + 4,
+        height: blockH,
+        color: rgb(0.97, 0.97, 0.97),
+        borderColor: color,
+        borderWidth: 0.75,
+        opacity: 1,
       });
+
+      // Color accent bar
+      newPage.drawRectangle({
+        x: noteX - 4,
+        y: cursorY - blockH,
+        width: 3,
+        height: blockH,
+        color,
+        opacity: 0.9,
+      });
+
+      let ty = cursorY - MARGIN / 2 - QUOTE_SIZE;
+
+      for (const line of quoteLines) {
+        if (ty < MARGIN) break;
+        newPage.drawText(line, {
+          x: noteX + 2,
+          y: ty,
+          size: QUOTE_SIZE,
+          font: helvetica,
+          color: rgb(0.45, 0.45, 0.45),
+        });
+        ty -= QUOTE_SIZE + 2;
+      }
+
+      if (bodyLines.length) {
+        ty -= 4;
+        for (const line of bodyLines) {
+          if (ty < MARGIN) break;
+          newPage.drawText(line, {
+            x: noteX + 2,
+            y: ty,
+            size: NOTE_SIZE,
+            font: helveticaBold,
+            color: rgb(0.1, 0.1, 0.1),
+          });
+          ty -= LINE_HEIGHT;
+        }
+      }
+
+      cursorY -= blockH + 6;
     }
   }
 
   const pdfBytes = await pdfDoc.save();
-
-  const arrayBuffer = new ArrayBuffer(pdfBytes.length);
-  new Uint8Array(arrayBuffer).set(pdfBytes);
-  const blob = new Blob([arrayBuffer], { type: 'application/pdf' });
+  const blob = new Blob([pdfBytes.buffer as ArrayBuffer], { type: 'application/pdf' });
   const url = URL.createObjectURL(blob);
-
   const link = document.createElement('a');
   link.href = url;
   link.download = 'annotated-document.pdf';
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);
-
   URL.revokeObjectURL(url);
 }
 
 function hexToRgb(hex: string): PDFColor {
-  const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
-  if (!result) return rgb(1, 1, 0);
-
-  return rgb(
-    parseInt(result[1], 16) / 255,
-    parseInt(result[2], 16) / 255,
-    parseInt(result[3], 16) / 255
-  );
+  const r = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+  if (!r) return rgb(1, 1, 0);
+  return rgb(parseInt(r[1], 16) / 255, parseInt(r[2], 16) / 255, parseInt(r[3], 16) / 255);
 }
 
-function wrapText(
-  text: string,
-  font: PDFFont,
-  fontSize: number,
-  maxWidth: number
-): string[] {
+function wrapText(text: string, font: PDFFont, size: number, maxWidth: number): string[] {
   const words = text.split(' ');
   const lines: string[] = [];
-  let currentLine = '';
-
+  let line = '';
   for (const word of words) {
-    const testLine = currentLine ? `${currentLine} ${word}` : word;
-    const width = font.widthOfTextAtSize(testLine, fontSize);
-
-    if (width > maxWidth && currentLine) {
-      lines.push(currentLine);
-      currentLine = word;
+    const test = line ? `${line} ${word}` : word;
+    if (font.widthOfTextAtSize(test, size) > maxWidth && line) {
+      lines.push(line);
+      line = word;
     } else {
-      currentLine = testLine;
+      line = test;
     }
   }
-
-  if (currentLine) {
-    lines.push(currentLine);
-  }
-
+  if (line) lines.push(line);
   return lines;
-}
-
-function getTextHeight(text: string, font: PDFFont, maxWidth: number, lineHeight: number): number {
-  const lines = wrapText(text, font, 9, maxWidth);
-  return Math.max(lines.length, 1);
 }
