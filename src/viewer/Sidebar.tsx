@@ -27,9 +27,22 @@ export const Sidebar: React.FC<SidebarProps> = ({
     }
   }, [editingId, annotations]);
 
+  useEffect(() => {
+    if (!editingId) return;
+
+    const ann = annotations.find(a => a.id === editingId);
+    if (!ann || ann.noteText === editText) return;
+
+    const timeout = window.setTimeout(() => {
+      onAnnotationUpdate({ ...ann, noteText: editText });
+    }, 300);
+
+    return () => window.clearTimeout(timeout);
+  }, [editingId, editText, annotations, onAnnotationUpdate]);
+
   const handleSaveEdit = (ann: Annotation) => {
-    if (editText.trim()) {
-      onAnnotationUpdate({ ...ann, noteText: editText.trim() });
+    if (ann.noteText !== editText) {
+      onAnnotationUpdate({ ...ann, noteText: editText });
     }
     setEditingId(null);
     setEditText('');
@@ -103,7 +116,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   autoFocus
                 />
                 <div className="edit-actions">
-                  <button onClick={() => handleSaveEdit(ann)}>Save</button>
+                  <button onClick={() => handleSaveEdit(ann)}>Done</button>
                   <button onClick={() => setEditingId(null)}>Cancel</button>
                 </div>
               </div>

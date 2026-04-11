@@ -4,18 +4,21 @@ import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import { PDFPage } from './PDFPage';
 import { Sidebar } from './Sidebar';
 import { DocumentRecord, Annotation, NormalizedRect, HIGHLIGHT_COLORS } from '../types';
-import { initDB, saveDocument, getDocument, getAnnotationsForDocument, saveAnnotation, deleteAnnotation, updateAnnotationNote } from '../lib/db';
+import { initDB, saveDocument, getDocument, getAnnotationsForDocument, saveAnnotation, deleteAnnotation, getDocumentSession, saveDocumentSession, deleteAnnotationsForDocument } from '../lib/db';
 import { generateId, hashArrayBuffer, debounce } from '../lib/utils';
 import { exportToPDF } from '../lib/export';
+import { extractChromePdfWorkspace, inspectChromePdfMetadata } from '../lib/workspacePdf';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
 interface AppProps {
   pdfSource?: ArrayBuffer | string;
   documentId?: string;
+  sourceName?: string;
+  sourceUrl?: string;
 }
 
-export const App: React.FC<AppProps> = ({ pdfSource, documentId: initialDocId }) => {
+export const App: React.FC<AppProps> = ({ pdfSource, documentId: initialDocId, sourceName, sourceUrl }) => {
   const [pdf, setPdf] = useState<pdfjsLib.PDFDocumentProxy | null>(null);
   const [documentRecord, setDocumentRecord] = useState<DocumentRecord | null>(null);
   const [annotations, setAnnotations] = useState<Annotation[]>([]);
@@ -30,6 +33,7 @@ export const App: React.FC<AppProps> = ({ pdfSource, documentId: initialDocId })
     rects: NormalizedRect[];
   } | null>(null);
   const [selectedColor, setSelectedColor] = useState(HIGHLIGHT_COLORS[0].value);
+  const [sessionReady, setSessionReady] = useState(false);
   const pageRefs = useRef<Map<number, HTMLDivElement>>(new Map());
 
   useEffect(() => {
@@ -47,6 +51,13 @@ export const App: React.FC<AppProps> = ({ pdfSource, documentId: initialDocId })
 
             const anns = await getAnnotationsForDocument(initialDocId);
             setAnnotations(anns);
+
+            const session = await getDocumentSession(initialDocId);
+            if (session) {
+              setCurrentPage(session.currentPage);
+              setScale(session.zoom);
+              setActiveAnnotationId(session.activeAnnotationId ?? null);
+            }
           }
         } else if (pdfSource) {
           let data: ArrayBuffer;
@@ -58,7 +69,19 @@ export const App: React.FC<AppProps> = ({ pdfSource, documentId: initialDocId })
             data = pdfSource;
           }
 
-          const hash = await hashArrayBuffer(data);
+          const chromePdfMetadata = await inspectChromePdfMetadata(data);
+          console.log('ChromePDF import inspection:', chromePdfMetadata);
+
+          const importedWorkspace = await extractChromePdfWorkspace(data);
+
+          if (chromePdfMetadata.isChromePdf && !importedWorkspace) {
+            throw new Error(
+              `ChromePDF restore failed. marker=${chromePdfMetadata.hasCatalogMarker || chromePdfMetadata.hasKeywordMarker} workspace=${chromePdfMetadata.hasWorkspaceField} original=${chromePdfMetadata.hasOriginalField}`
+            );
+          }
+
+          const workspaceBytes = importedWorkspace?.sourcePdfBytes ?? data;
+          const hash = await hashArrayBuffer(workspaceBytes);
           const existingDoc = await getDocument(hash);
 
           if (existingDoc) {
@@ -67,42 +90,89 @@ export const App: React.FC<AppProps> = ({ pdfSource, documentId: initialDocId })
             setPdf(pdfDoc);
             setDocumentRecord(existingDoc);
 
+            if (importedWorkspace) {
+              await deleteAnnotationsForDocument(hash);
+              for (const annotation of importedWorkspace.annotations) {
+                await saveAnnotation({
+                  ...annotation,
+                  documentId: hash,
+                });
+              }
+            }
+
             const anns = await getAnnotationsForDocument(hash);
             setAnnotations(anns);
+
+            const session = await getDocumentSession(hash);
+            if (session) {
+              setCurrentPage(session.currentPage);
+              setScale(session.zoom);
+              setActiveAnnotationId(session.activeAnnotationId ?? null);
+            }
           } else {
-            const loadingTask = pdfjsLib.getDocument({ data: data.slice(0) });
+            const loadingTask = pdfjsLib.getDocument({ data: workspaceBytes.slice(0) });
             const pdfDoc = await loadingTask.promise;
+            const now = new Date().toISOString();
 
             const docRecord: DocumentRecord = {
               id: hash,
-              name: 'Document',
-              file: data,
-              createdAt: new Date().toISOString(),
-              updatedAt: new Date().toISOString(),
+              name: importedWorkspace?.documentName || sourceName || getDocumentNameFromSource(sourceUrl) || 'Document',
+              sourceUrl,
+              file: workspaceBytes,
+              createdAt: now,
+              updatedAt: now,
               pageCount: pdfDoc.numPages
             };
 
             await saveDocument(docRecord);
             setPdf(pdfDoc);
             setDocumentRecord(docRecord);
-            setAnnotations([]);
+
+            if (importedWorkspace) {
+              for (const annotation of importedWorkspace.annotations) {
+                await saveAnnotation({
+                  ...annotation,
+                  documentId: hash,
+                });
+              }
+              setAnnotations(importedWorkspace.annotations.map((annotation) => ({
+                ...annotation,
+                documentId: hash,
+              })));
+            } else {
+              setAnnotations([]);
+            }
           }
         }
       } catch (err) {
         console.error('Failed to load PDF:', err);
-        setError('Failed to load PDF. Please try again.');
+        setError(err instanceof Error ? err.message : 'Failed to load PDF. Please try again.');
       } finally {
+        setSessionReady(true);
         setLoading(false);
       }
     };
 
     init();
-  }, [pdfSource, initialDocId]);
+  }, [pdfSource, initialDocId, sourceName, sourceUrl]);
 
   const debouncedSaveAnnotation = useCallback(
     debounce((ann: Annotation) => {
       saveAnnotation(ann).catch(console.error);
     }, 500),
+    []
+  );
+
+  const debouncedSaveSession = useCallback(
+    debounce((documentId: string, currentPage: number, zoom: number, activeAnnotationId: string | null) => {
+      saveDocumentSession({
+        documentId,
+        currentPage,
+        zoom,
+        activeAnnotationId,
+        updatedAt: new Date().toISOString(),
+      }).catch(console.error);
+    }, 300),
     []
   );
 
@@ -135,10 +205,10 @@ export const App: React.FC<AppProps> = ({ pdfSource, documentId: initialDocId })
     };
 
     setAnnotations(prev => [...prev, newAnnotation]);
-    await saveAnnotation(newAnnotation);
+    debouncedSaveAnnotation(newAnnotation);
     setActiveAnnotationId(newAnnotation.id);
     setPendingSelection(null);
-  }, [pendingSelection, documentRecord, selectedColor]);
+  }, [pendingSelection, documentRecord, selectedColor, debouncedSaveAnnotation]);
 
   const handleCancelSelection = useCallback(() => {
     setPendingSelection(null);
@@ -152,8 +222,8 @@ export const App: React.FC<AppProps> = ({ pdfSource, documentId: initialDocId })
   const handleAnnotationUpdate = useCallback(async (updated: Annotation) => {
     updated.updatedAt = new Date().toISOString();
     setAnnotations(prev => prev.map(a => a.id === updated.id ? updated : a));
-    await saveAnnotation(updated);
-  }, []);
+    debouncedSaveAnnotation(updated);
+  }, [debouncedSaveAnnotation]);
 
   const handleAnnotationDelete = useCallback(async (id: string) => {
     setAnnotations(prev => prev.filter(a => a.id !== id));
@@ -162,14 +232,17 @@ export const App: React.FC<AppProps> = ({ pdfSource, documentId: initialDocId })
   }, [activeAnnotationId]);
 
   const handleExport = useCallback(async () => {
-    if (!pdf || !documentRecord) return;
+    if (!pdf) return;
+
     try {
-      await exportToPDF(pdf, annotations, scale);
+      const sourcePdfBytes = await pdf.getData();
+      await exportToPDF(sourcePdfBytes, annotations, documentRecord?.name);
     } catch (err) {
       console.error('Export failed:', err);
-      alert('Export failed. Please try again.');
+      const message = err instanceof Error ? err.message : 'Unknown error';
+      alert(`Export failed: ${message}`);
     }
-  }, [pdf, annotations, scale, documentRecord]);
+  }, [pdf, annotations]);
 
   useEffect(() => {
     const pageEl = pageRefs.current.get(currentPage);
@@ -177,6 +250,12 @@ export const App: React.FC<AppProps> = ({ pdfSource, documentId: initialDocId })
       pageEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
   }, [currentPage]);
+
+  useEffect(() => {
+    if (!sessionReady || !documentRecord) return;
+
+    debouncedSaveSession(documentRecord.id, currentPage, scale, activeAnnotationId);
+  }, [sessionReady, documentRecord, currentPage, scale, activeAnnotationId, annotations, debouncedSaveSession]);
 
   if (loading) {
     return (
@@ -322,4 +401,17 @@ export const App: React.FC<AppProps> = ({ pdfSource, documentId: initialDocId })
 function truncateText(text: string, maxLength: number): string {
   if (text.length <= maxLength) return text;
   return text.substring(0, maxLength - 3) + '...';
+}
+
+function getDocumentNameFromSource(sourceUrl?: string): string | undefined {
+  if (!sourceUrl) return undefined;
+
+  try {
+    const url = new URL(sourceUrl);
+    const parts = url.pathname.split('/');
+    const lastPart = parts[parts.length - 1];
+    return decodeURIComponent(lastPart) || undefined;
+  } catch {
+    return undefined;
+  }
 }

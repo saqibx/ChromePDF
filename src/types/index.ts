@@ -22,6 +22,14 @@ export type DocumentRecord = {
   pageCount: number;
 };
 
+export type DocumentSessionState = {
+  documentId: string;
+  currentPage: number;
+  zoom: number;
+  activeAnnotationId?: string | null;
+  updatedAt: string;
+};
+
 export type Annotation = {
   id: string;
   documentId: string;

@@ -1,7 +1,7 @@
-import { DocumentRecord, Annotation } from '../types';
+import { DocumentRecord, Annotation, DocumentSessionState } from '../types';
 
 const DB_NAME = 'chromepdf';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 
 let db: IDBDatabase | null = null;
 
@@ -30,6 +30,11 @@ export async function initDB(): Promise<IDBDatabase> {
         const annStore = database.createObjectStore('annotations', { keyPath: 'id' });
         annStore.createIndex('documentId', 'documentId', { unique: false });
         annStore.createIndex('pageNumber', 'pageNumber', { unique: false });
+      }
+
+      if (!database.objectStoreNames.contains('documentSessions')) {
+        const sessionStore = database.createObjectStore('documentSessions', { keyPath: 'documentId' });
+        sessionStore.createIndex('updatedAt', 'updatedAt', { unique: false });
       }
     };
   });
@@ -68,6 +73,39 @@ export async function getAllDocuments(): Promise<DocumentRecord[]> {
   });
 }
 
+export async function saveDocumentSession(session: DocumentSessionState): Promise<void> {
+  const database = await initDB();
+  return new Promise((resolve, reject) => {
+    const tx = database.transaction('documentSessions', 'readwrite');
+    const store = tx.objectStore('documentSessions');
+    const request = store.put(session);
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => resolve();
+  });
+}
+
+export async function getDocumentSession(documentId: string): Promise<DocumentSessionState | undefined> {
+  const database = await initDB();
+  return new Promise((resolve, reject) => {
+    const tx = database.transaction('documentSessions', 'readonly');
+    const store = tx.objectStore('documentSessions');
+    const request = store.get(documentId);
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => resolve(request.result);
+  });
+}
+
+export async function getAllDocumentSessions(): Promise<DocumentSessionState[]> {
+  const database = await initDB();
+  return new Promise((resolve, reject) => {
+    const tx = database.transaction('documentSessions', 'readonly');
+    const store = tx.objectStore('documentSessions');
+    const request = store.getAll();
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => resolve(request.result || []);
+  });
+}
+
 export async function deleteDocument(id: string): Promise<void> {
   const database = await initDB();
   return new Promise((resolve, reject) => {
@@ -82,6 +120,28 @@ export async function deleteDocument(id: string): Promise<void> {
 
     annRequest.onsuccess = () => {
       const cursor = annRequest.result;
+      if (cursor) {
+        cursor.delete();
+        cursor.continue();
+      }
+    };
+
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+export async function deleteAnnotationsForDocument(docId: string): Promise<void> {
+  const database = await initDB();
+  return new Promise((resolve, reject) => {
+    const tx = database.transaction('annotations', 'readwrite');
+    const store = tx.objectStore('annotations');
+    const index = store.index('documentId');
+    const request = index.openCursor(IDBKeyRange.only(docId));
+
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => {
+      const cursor = request.result;
       if (cursor) {
         cursor.delete();
         cursor.continue();
