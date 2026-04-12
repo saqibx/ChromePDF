@@ -1,12 +1,188 @@
-import { PDFDocument, rgb, StandardFonts, PDFFont } from 'pdf-lib';
+import { PDFDocument, PDFFont, PDFImage, rgb, StandardFonts } from 'pdf-lib';
+import katex from 'katex';
+import katexCss from 'katex/dist/katex.min.css?raw';
 import { Annotation } from '../types';
-import {
-  CHROMEPDF_SOURCE_FILENAME,
-  CHROMEPDF_WORKSPACE_FILENAME,
-  createWorkspacePayload,
-} from './workspacePdf';
+import { CHROMEPDF_SOURCE_FILENAME, createWorkspacePayload } from './workspacePdf';
 
 type PDFColor = ReturnType<typeof rgb>;
+
+type NoteBlock =
+  | { type: 'heading'; level: 1 | 2 | 3; text: string }
+  | { type: 'paragraph'; text: string }
+  | { type: 'quote'; text: string }
+  | { type: 'code'; text: string }
+  | { type: 'math'; text: string }
+  | { type: 'divider' }
+  | { type: 'toggle'; text: string }
+  | { type: 'list'; ordered: boolean; kind: 'bullet' | 'checklist'; items: NoteListItem[] };
+
+type NoteListItem = {
+  text: string;
+  checked?: boolean;
+};
+
+type LayoutBlock =
+  | { type: 'heading'; level: 1 | 2 | 3; lines: string[]; height: number }
+  | { type: 'paragraph'; lines: string[]; height: number }
+  | { type: 'quote'; lines: string[]; height: number }
+  | { type: 'code'; lines: string[]; height: number }
+  | { type: 'math'; pdfImage: PDFImage | null; lines: string[]; height: number }
+  | { type: 'divider'; height: number }
+  | { type: 'toggle'; lines: string[]; height: number }
+  | { type: 'list'; ordered: boolean; kind: 'bullet' | 'checklist'; items: LayoutListItem[]; height: number };
+
+type LayoutListItem = {
+  label: string;
+  lines: string[];
+  checked?: boolean;
+  height: number;
+};
+
+const LINE_HEIGHT = 11;
+const BLOCK_INNER_GAP = 3;
+const NOTE_CONTENT_PAD_X = 8;
+const NOTE_CONTENT_PAD_Y = 8;
+const MATH_BOX_PAD = 6;
+
+const _fontB64Cache = new Map<string, string>();
+
+async function _fetchFontB64(url: string): Promise<string> {
+  if (_fontB64Cache.has(url)) return _fontB64Cache.get(url)!;
+  const buf = await (await fetch(url)).arrayBuffer();
+  const bytes = new Uint8Array(buf);
+  let bin = '';
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+  const b64 = btoa(bin);
+  _fontB64Cache.set(url, b64);
+  return b64;
+}
+
+async function renderMathToPng(latex: string, maxWidthPt: number): Promise<Uint8Array | null> {
+  const container = document.createElement('div');
+  try {
+    const pxWidth = Math.round(maxWidthPt * 2); // 2× for sharpness
+
+    container.style.cssText = `position:fixed;top:-9999px;left:-9999px;width:${pxWidth}px;background:white;padding:6px;box-sizing:border-box;font-size:16px;text-align:center`;
+    container.innerHTML = katex.renderToString(latex, { displayMode: true, throwOnError: false });
+    document.body.appendChild(container);
+    await new Promise<void>((r) => requestAnimationFrame(() => { requestAnimationFrame(() => r()); }));
+
+    const rect = container.getBoundingClientRect();
+    const w = Math.ceil(rect.width) || pxWidth;
+    const h = Math.ceil(rect.height) || 80;
+    const usedKeys = new Set<string>();
+    const walk = (el: Element) => {
+      const cs = window.getComputedStyle(el);
+      const fam = cs.fontFamily.split(',')[0].replace(/['"]/g, '').trim();
+      if (fam.startsWith('KaTeX')) usedKeys.add(`${fam}|||${cs.fontStyle}|||${cs.fontWeight}`);
+      for (const c of el.children) walk(c);
+    };
+    walk(container);
+
+    const fontFaceRules: string[] = [];
+    const fontUrls = extractKatexFontUrls(katexCss);
+    for (const sheet of document.styleSheets) {
+      try {
+        for (const rule of sheet.cssRules) {
+          if (!(rule instanceof CSSFontFaceRule)) continue;
+          const fam = rule.style.fontFamily.replace(/['"]/g, '').trim();
+          const sty = rule.style.fontStyle || 'normal';
+          const wgt = rule.style.fontWeight || '400';
+          if (!usedKeys.has(`${fam}|||${sty}|||${wgt}`)) continue;
+          const src = rule.style.getPropertyValue('src') || '';
+          const woff2 = src.match(/url\(['"]?([^'")\s]+\.woff2)['"]?\)/)?.[1];
+          if (!woff2) continue;
+          const fontUrl = resolveKatexFontUrl(woff2, fontUrls);
+          const b64 = await _fetchFontB64(fontUrl);
+          fontFaceRules.push(`@font-face{font-family:"${fam}";font-style:${sty};font-weight:${wgt};src:url('data:font/woff2;base64,${b64}') format('woff2')}`);
+        }
+      } catch {
+        // Ignore stylesheets we can't read; the bundled KaTeX CSS is enough.
+      }
+    }
+
+    const xmlns = 'http://www.w3.org/2000/svg';
+    const xhtml = 'http://www.w3.org/1999/xhtml';
+    const svg = document.createElementNS(xmlns, 'svg');
+    svg.setAttribute('xmlns', xmlns);
+    svg.setAttribute('width', String(w));
+    svg.setAttribute('height', String(h));
+    svg.setAttribute('viewBox', `0 0 ${w} ${h}`);
+
+    const styleEl = document.createElementNS(xmlns, 'style');
+    styleEl.textContent = `${fontFaceRules.join('\n')}\n${stripFontFaceRules(katexCss)}`;
+    svg.appendChild(styleEl);
+
+    const foreignObject = document.createElementNS(xmlns, 'foreignObject');
+    foreignObject.setAttribute('x', '0');
+    foreignObject.setAttribute('y', '0');
+    foreignObject.setAttribute('width', '100%');
+    foreignObject.setAttribute('height', '100%');
+    svg.appendChild(foreignObject);
+
+    const wrapper = document.createElementNS(xhtml, 'div');
+    wrapper.setAttribute('xmlns', xhtml);
+    wrapper.setAttribute(
+      'style',
+      `width:${w}px;height:${h}px;background:white;padding:6px;box-sizing:border-box;font-size:16px;text-align:center`
+    );
+    wrapper.innerHTML = container.innerHTML;
+    foreignObject.appendChild(wrapper);
+
+    const serialized = new XMLSerializer().serializeToString(svg);
+    const svgDataUrl = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(serialized)}`;
+    const pngDataUrl = await svgDataUrlToPng(svgDataUrl, w, h);
+
+    const b64 = pngDataUrl.split(',')[1];
+    return Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+  } catch (err) {
+    if (err instanceof Error) {
+      console.error('renderMathToPng:', err.name, err.message, err.stack);
+    } else {
+      console.error('renderMathToPng:', err);
+    }
+    return null;
+  } finally {
+    if (container.parentNode) container.parentNode.removeChild(container);
+  }
+}
+
+async function svgDataUrlToPng(svgDataUrl: string, width: number, height: number): Promise<string> {
+  const img = new Image();
+  img.decoding = 'async';
+  img.src = svgDataUrl;
+  await img.decode();
+
+  const canvas = document.createElement('canvas');
+  canvas.width = width * 2;
+  canvas.height = height * 2;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('Unable to acquire 2D canvas context');
+  ctx.fillStyle = 'white';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+  return canvas.toDataURL('image/png');
+}
+
+function extractKatexFontUrls(css: string): Map<string, string> {
+  const map = new Map<string, string>();
+  const re = /url\((['"]?)([^'")]+)\1\)/g;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(css)) !== null) {
+    const url = match[2];
+    map.set(url.split('/').pop() ?? url, url);
+  }
+  return map;
+}
+
+function resolveKatexFontUrl(url: string, fontUrls: Map<string, string>): string {
+  const base = url.split('/').pop() ?? url;
+  return fontUrls.get(base) ?? url;
+}
+
+function stripFontFaceRules(css: string): string {
+  return css.replace(/@font-face\s*\{[\s\S]*?\}/g, '');
+}
 
 export async function exportToPDF(
   sourcePdfBytes: ArrayBuffer | Uint8Array,
@@ -22,7 +198,8 @@ export async function exportToPDF(
   const MARGIN = 14;
   const QUOTE_SIZE = 7.5;
   const NOTE_SIZE = 8.5;
-  const LINE_HEIGHT = 11;
+  const BLOCK_PAD_X = 8;
+  const BLOCK_PAD_Y = 5;
 
   const pages = pdfDoc.getPages();
 
@@ -32,7 +209,6 @@ export async function exportToPDF(
 
     page.setSize(pageW + SIDEBAR_WIDTH, pageH);
 
-    // Sidebar background
     page.drawRectangle({
       x: pageW,
       y: 0,
@@ -41,7 +217,6 @@ export async function exportToPDF(
       color: rgb(1, 1, 1),
     });
 
-    // Divider line
     page.drawLine({
       start: { x: pageW, y: 0 },
       end: { x: pageW, y: pageH },
@@ -49,24 +224,19 @@ export async function exportToPDF(
       color: rgb(0.8, 0.8, 0.8),
     });
 
-    const pageAnnotations = annotations.filter(a => a.pageNumber === pageNum);
+    const pageAnnotations = annotations.filter((annotation) => annotation.pageNumber === pageNum);
 
-    // ── Draw highlights ──────────────────────────────────────────────────────
-    // Stored rects: x/y/width/height are 0-100 as % of canvas dimensions.
-    // Canvas origin = top-left (y down); PDF-lib origin = bottom-left (y up).
-    // drawRectangle takes the BOTTOM-LEFT corner in PDF-lib space:
-    //   pdfY_bottomLeft = pageH - canvasY_top - rectH
     for (const ann of pageAnnotations) {
       const color = hexToRgb(ann.color);
       for (const rect of ann.highlightRects) {
         const rx = (rect.x / 100) * pageW;
-        const ry = (rect.y / 100) * pageH;       // canvas y from top
+        const ry = (rect.y / 100) * pageH;
         const rw = (rect.width / 100) * pageW;
         const rh = Math.max((rect.height / 100) * pageH, 1);
 
         page.drawRectangle({
           x: rx,
-          y: pageH - ry - rh,                    // flip y-axis for PDF-lib
+          y: pageH - ry - rh,
           width: rw,
           height: rh,
           color,
@@ -75,57 +245,61 @@ export async function exportToPDF(
       }
     }
 
-    // ── Sidebar notes ────────────────────────────────────────────────────────
     let cursorY = pageH - MARGIN;
 
     for (const ann of pageAnnotations) {
-      const color = hexToRgb(ann.color);
+      const accentColor = hexToRgb(ann.color);
       const noteX = pageW + MARGIN;
       const noteW = SIDEBAR_WIDTH - MARGIN * 2;
-      const selectedText = sanitizeForWinAnsi(ann.selectedText);
-      const noteText = sanitizeForWinAnsi(ann.noteText);
+      const contentX = noteX + NOTE_CONTENT_PAD_X;
+      const contentW = noteW - NOTE_CONTENT_PAD_X * 2;
+      const selectedText = sanitizeLineText(ann.selectedText);
+      const noteBlocks = parseNoteBlocks(ann.noteText);
+      const mathImages = new Map<number, PDFImage>();
+      for (let bi = 0; bi < noteBlocks.length; bi++) {
+        const nb = noteBlocks[bi];
+        if (nb.type === 'math' && nb.text.trim()) {
+          const png = await renderMathToPng(nb.text, contentW);
+          if (png) mathImages.set(bi, await pdfDoc.embedPng(png));
+        }
+      }
+      const bodyBlocks = layoutNoteBlocks(noteBlocks, helvetica, helveticaBold, NOTE_SIZE, contentW, mathImages);
+      const quoteLines = wrapText(`"${selectedText}"`, helvetica, QUOTE_SIZE, contentW);
 
-      const quoteLines = wrapText(`"${selectedText}"`, helvetica, QUOTE_SIZE, noteW);
-      const bodyLines = noteText
-        ? wrapText(noteText, helvetica, NOTE_SIZE, noteW)
-        : [];
-
+      const bodyHeight = bodyBlocks.reduce((sum, block) => sum + block.height, 0) + Math.max(0, (bodyBlocks.length - 1) * BLOCK_INNER_GAP);
       const blockH =
-        MARGIN / 2 +
+        NOTE_CONTENT_PAD_Y +
         quoteLines.length * (QUOTE_SIZE + 2) +
-        (bodyLines.length ? 4 + bodyLines.length * LINE_HEIGHT : 0) +
-        MARGIN / 2;
+        (bodyBlocks.length ? BLOCK_INNER_GAP + bodyHeight : 0) +
+        NOTE_CONTENT_PAD_Y;
 
       if (cursorY - blockH < MARGIN) break;
 
-      // Background box
       page.drawRectangle({
         x: noteX - 4,
         y: cursorY - blockH,
         width: noteW + 4,
         height: blockH,
         color: rgb(0.97, 0.97, 0.97),
-        borderColor: color,
+        borderColor: accentColor,
         borderWidth: 0.75,
         opacity: 1,
       });
 
-      // Color accent bar
       page.drawRectangle({
         x: noteX - 4,
         y: cursorY - blockH,
         width: 3,
         height: blockH,
-        color,
+        color: accentColor,
         opacity: 0.9,
       });
 
-      let ty = cursorY - MARGIN / 2 - QUOTE_SIZE;
-
+      let ty = cursorY - NOTE_CONTENT_PAD_Y - QUOTE_SIZE;
       for (const line of quoteLines) {
         if (ty < MARGIN) break;
         page.drawText(line, {
-          x: noteX + 2,
+          x: contentX,
           y: ty,
           size: QUOTE_SIZE,
           font: helvetica,
@@ -134,18 +308,25 @@ export async function exportToPDF(
         ty -= QUOTE_SIZE + 2;
       }
 
-      if (bodyLines.length) {
-        ty -= 4;
-        for (const line of bodyLines) {
+      if (bodyBlocks.length) {
+        ty -= BLOCK_INNER_GAP;
+        for (const block of bodyBlocks) {
+          ty = drawLayoutBlock(
+            page,
+            block,
+            contentX,
+            ty,
+            contentW,
+            helvetica,
+            helveticaBold,
+            NOTE_SIZE,
+            accentColor,
+            BLOCK_PAD_X,
+            BLOCK_PAD_Y,
+            BLOCK_INNER_GAP
+          );
+          ty -= BLOCK_INNER_GAP;
           if (ty < MARGIN) break;
-          page.drawText(line, {
-            x: noteX + 2,
-            y: ty,
-            size: NOTE_SIZE,
-            font: helveticaBold,
-            color: rgb(0.1, 0.1, 0.1),
-          });
-          ty -= LINE_HEIGHT;
         }
       }
 
@@ -154,14 +335,10 @@ export async function exportToPDF(
   }
 
   const workspacePayload = createWorkspacePayload(annotations, documentName);
-
-  // Store workspace JSON as base64 in keywords — plain text, no compression,
-  // reliably readable by pdf-lib's getKeywords() without any stream decoding.
   const workspaceJson = JSON.stringify(workspacePayload);
   const workspaceB64 = uint8ArrayToBase64(new TextEncoder().encode(workspaceJson));
   pdfDoc.setKeywords(['source:chromepdf', `chromepdf-workspace:${workspaceB64}`]);
 
-  // Store original PDF as embedded file for recovery
   await pdfDoc.attach(pdfBytes, CHROMEPDF_SOURCE_FILENAME, {
     mimeType: 'application/pdf',
     description: 'Original PDF source for ChromePDF workspace recovery',
@@ -181,6 +358,455 @@ export async function exportToPDF(
   link.click();
   document.body.removeChild(link);
   URL.revokeObjectURL(url);
+}
+
+function drawLayoutBlock(
+  page: any,
+  block: LayoutBlock,
+  x: number,
+  topY: number,
+  maxWidth: number,
+  bodyFont: PDFFont,
+  boldFont: PDFFont,
+  bodySize: number,
+  accentColor: PDFColor,
+  padX: number,
+  padY: number,
+  innerGap: number
+): number {
+  switch (block.type) {
+    case 'heading': {
+      const size = block.level === 1 ? 13 : block.level === 2 ? 11.5 : 10.5;
+      let y = topY - padY - size;
+      for (const line of block.lines) {
+        page.drawText(line, {
+          x: x + padX,
+          y,
+          size,
+          font: boldFont,
+          color: rgb(0.1, 0.1, 0.1),
+        });
+        y -= size + 1.5;
+      }
+      return topY - block.height;
+    }
+    case 'paragraph': {
+      let y = topY - padY - bodySize;
+      for (const line of block.lines) {
+        if (line) {
+          page.drawText(line, {
+            x: x + padX,
+            y,
+            size: bodySize,
+            font: bodyFont,
+            color: rgb(0.12, 0.12, 0.12),
+          });
+        }
+        y -= LINE_HEIGHT;
+      }
+      return topY - block.height;
+    }
+    case 'quote': {
+      page.drawRectangle({
+        x,
+        y: topY - block.height,
+        width: maxWidth,
+        height: block.height,
+        color: rgb(0.97, 0.97, 0.97),
+        borderColor: rgb(0.75, 0.75, 0.75),
+        borderWidth: 0.5,
+      });
+      page.drawRectangle({
+        x,
+        y: topY - block.height,
+        width: 2.5,
+        height: block.height,
+        color: accentColor,
+      });
+      let y = topY - padY - bodySize;
+      for (const line of block.lines) {
+        page.drawText(line, {
+          x: x + padX,
+          y,
+          size: bodySize,
+          font: bodyFont,
+          color: rgb(0.35, 0.35, 0.35),
+        });
+        y -= LINE_HEIGHT;
+      }
+      return topY - block.height;
+    }
+    case 'math': {
+      const boxX = x;
+      const boxY = topY - block.height;
+      const boxW = maxWidth;
+      const boxH = block.height;
+      page.drawRectangle({
+        x: boxX,
+        y: boxY,
+        width: boxW,
+        height: boxH,
+        color: rgb(0.98, 0.98, 1),
+      });
+      if (block.pdfImage) {
+        const imgW = boxW - MATH_BOX_PAD * 2;
+        const dims = block.pdfImage.scale(imgW / block.pdfImage.width);
+        const imgH = Math.min(dims.height, boxH - MATH_BOX_PAD * 2);
+        page.drawImage(block.pdfImage, {
+          x: boxX + MATH_BOX_PAD,
+          y: boxY + (boxH - imgH) / 2,
+          width: imgW,
+          height: imgH,
+        });
+      } else {
+        let y = boxY + boxH - MATH_BOX_PAD - bodySize;
+        for (const line of block.lines) {
+          page.drawText(line, {
+            x: boxX + MATH_BOX_PAD,
+            y,
+            size: bodySize,
+            font: bodyFont,
+            color: rgb(0.1, 0.1, 0.1),
+          });
+          y -= LINE_HEIGHT;
+        }
+      }
+      return topY - block.height;
+    }
+    case 'code': {
+      page.drawRectangle({
+        x,
+        y: topY - block.height,
+        width: maxWidth,
+        height: block.height,
+        color: rgb(0.12, 0.14, 0.18),
+        borderColor: rgb(0.12, 0.14, 0.18),
+        borderWidth: 0.5,
+      });
+      let y = topY - padY - bodySize;
+      for (const line of block.lines) {
+        page.drawText(line, {
+          x: x + padX,
+          y,
+          size: bodySize,
+          font: bodyFont,
+          color: rgb(0.95, 0.95, 0.95),
+        });
+        y -= LINE_HEIGHT;
+      }
+      return topY - block.height;
+    }
+    case 'divider': {
+      page.drawLine({
+        start: { x: x + padX, y: topY - block.height / 2 },
+        end: { x: x + maxWidth - padX, y: topY - block.height / 2 },
+        thickness: 0.5,
+        color: rgb(0.82, 0.82, 0.82),
+      });
+      return topY - block.height;
+    }
+    case 'toggle': {
+      page.drawText('▸', {
+        x: x + padX,
+        y: topY - padY - bodySize,
+        size: bodySize,
+        font: boldFont,
+        color: rgb(0.5, 0.5, 0.5),
+      });
+      let y = topY - padY - bodySize;
+      for (const line of block.lines) {
+        page.drawText(line, {
+          x: x + padX + 10,
+          y,
+          size: bodySize,
+          font: bodyFont,
+          color: rgb(0.12, 0.12, 0.12),
+        });
+        y -= LINE_HEIGHT;
+      }
+      return topY - block.height;
+    }
+    case 'list': {
+      let y = topY - padY;
+      for (const item of block.items) {
+        if (block.kind === 'checklist') {
+          const boxSize = 8;
+          const boxX = x + padX;
+          const boxY = y - 8;
+          page.drawRectangle({
+            x: boxX,
+            y: boxY,
+            width: boxSize,
+            height: boxSize,
+            borderColor: rgb(0.3, 0.3, 0.3),
+            borderWidth: 0.8,
+            color: rgb(1, 1, 1),
+          });
+          if (item.checked) {
+            page.drawText('x', {
+              x: boxX + 1.5,
+              y: boxY + 0.4,
+              size: 7,
+              font: boldFont,
+              color: rgb(0.15, 0.15, 0.15),
+            });
+          }
+        } else {
+          page.drawText(item.label, {
+            x: x + padX,
+            y: y - bodySize,
+            size: bodySize,
+            font: bodyFont,
+            color: rgb(0.2, 0.2, 0.2),
+          });
+        }
+
+        const textX = block.kind === 'checklist' ? x + padX + 14 : x + padX + 10;
+        let textY = y - bodySize;
+        for (const line of item.lines) {
+          page.drawText(line, {
+            x: textX,
+            y: textY,
+            size: bodySize,
+            font: bodyFont,
+            color: rgb(0.12, 0.12, 0.12),
+          });
+          textY -= LINE_HEIGHT;
+        }
+
+        y -= item.height + innerGap;
+      }
+      return topY - block.height;
+    }
+  }
+}
+
+function parseNoteBlocks(text: string): NoteBlock[] {
+  const normalized = sanitizeForPdfText(text);
+  const lines = normalized.split('\n');
+  const blocks: NoteBlock[] = [];
+  let index = 0;
+
+  while (index < lines.length) {
+    const line = lines[index];
+    const trimmed = line.trim();
+
+    if (!trimmed) {
+      index += 1;
+      continue;
+    }
+
+    if (trimmed.startsWith('```')) {
+      const collected: string[] = [];
+      index += 1;
+      while (index < lines.length && !lines[index].trim().startsWith('```')) {
+        collected.push(lines[index]);
+        index += 1;
+      }
+      if (index < lines.length) index += 1;
+      blocks.push({ type: 'code', text: collected.join('\n') });
+      continue;
+    }
+
+    if (trimmed === '$$') {
+      const collected: string[] = [];
+      index += 1;
+      while (index < lines.length && lines[index].trim() !== '$$') {
+        collected.push(lines[index]);
+        index += 1;
+      }
+      if (index < lines.length) index += 1;
+      blocks.push({ type: 'math', text: collected.join('\n') });
+      continue;
+    }
+
+    const headingMatch = trimmed.match(/^(#{1,3})\s+(.*)$/);
+    if (headingMatch) {
+      blocks.push({
+        type: 'heading',
+        level: headingMatch[1].length as 1 | 2 | 3,
+        text: headingMatch[2],
+      });
+      index += 1;
+      continue;
+    }
+
+    if (trimmed.startsWith('>')) {
+      const collected: string[] = [];
+      while (index < lines.length && lines[index].trim().startsWith('>')) {
+        collected.push(lines[index].replace(/^>\s?/, ''));
+        index += 1;
+      }
+      blocks.push({ type: 'quote', text: collected.join('\n') });
+      continue;
+    }
+
+    if (/^---+$/.test(trimmed)) {
+      blocks.push({ type: 'divider' });
+      index += 1;
+      continue;
+    }
+
+    if (trimmed.startsWith('▸')) {
+      blocks.push({ type: 'toggle', text: trimmed.slice(1).trim() });
+      index += 1;
+      continue;
+    }
+
+    const listMatch = trimmed.match(/^(\d+\.|-|\*)\s+(.*)$/);
+    if (listMatch) {
+      const ordered = /^\d+\./.test(listMatch[1]);
+      const items: NoteListItem[] = [];
+      let kind: 'bullet' | 'checklist' = 'bullet';
+
+      while (index < lines.length) {
+        const current = lines[index].trim();
+        const currentMatch = current.match(/^(\d+\.|-|\*)\s+(.*)$/);
+        if (!currentMatch || /^\d+\./.test(currentMatch[1]) !== ordered) break;
+
+        const itemText = currentMatch[2];
+        const checkedMatch = current.match(/^-+\s+\[([ xX])\]\s+(.*)$/);
+        if (checkedMatch) {
+          items.push({
+            text: checkedMatch[2],
+            checked: checkedMatch[1].toLowerCase() !== ' ',
+          });
+          kind = 'checklist';
+        } else {
+          items.push({ text: itemText });
+        }
+
+        index += 1;
+      }
+
+      blocks.push({ type: 'list', ordered, kind, items });
+      continue;
+    }
+
+    const collected: string[] = [];
+    while (index < lines.length) {
+      const current = lines[index];
+      const currentTrimmed = current.trim();
+      if (!currentTrimmed) break;
+      if (
+        currentTrimmed.startsWith('```') ||
+        currentTrimmed === '$$' ||
+        currentTrimmed.startsWith('>') ||
+        /^#{1,3}\s+/.test(currentTrimmed) ||
+        /^---+$/.test(currentTrimmed) ||
+        /^(\d+\.|-|\*)\s+/.test(currentTrimmed) ||
+        currentTrimmed.startsWith('▸')
+      ) {
+        break;
+      }
+
+      collected.push(current);
+      index += 1;
+    }
+
+    if (collected.length === 0) {
+      collected.push(line);
+      index += 1;
+    }
+
+    blocks.push({ type: 'paragraph', text: collected.join('\n') });
+  }
+
+  return blocks;
+}
+
+function layoutNoteBlocks(
+  blocks: NoteBlock[],
+  bodyFont: PDFFont,
+  boldFont: PDFFont,
+  bodySize: number,
+  maxWidth: number,
+  mathImages: Map<number, PDFImage> = new Map()
+): LayoutBlock[] {
+  return blocks.map((block, blockIndex) => {
+    switch (block.type) {
+      case 'heading': {
+        const size = block.level === 1 ? 13 : block.level === 2 ? 11.5 : 10.5;
+        const lines = wrapText(block.text, boldFont, size, maxWidth);
+        return {
+          type: 'heading',
+          level: block.level,
+          lines,
+          height: Math.max(lines.length * (size + 2) + 6, size + 10),
+        };
+      }
+      case 'paragraph': {
+        const lines = wrapTextMultiline(block.text, bodyFont, bodySize, maxWidth);
+        return {
+          type: 'paragraph',
+          lines,
+          height: Math.max(lines.length * LINE_HEIGHT + 10, LINE_HEIGHT + 10),
+        };
+      }
+      case 'quote': {
+        const lines = wrapTextMultiline(block.text, bodyFont, bodySize, maxWidth - 8);
+        return {
+          type: 'quote',
+          lines,
+          height: Math.max(lines.length * LINE_HEIGHT + 12, LINE_HEIGHT + 12),
+        };
+      }
+      case 'code': {
+        const lines = block.text.split('\n').map((line) => line || ' ');
+        return {
+          type: 'code',
+          lines,
+          height: Math.max(lines.length * LINE_HEIGHT + 12, LINE_HEIGHT + 12),
+        };
+      }
+      case 'math': {
+        const pdfImage = mathImages.get(blockIndex) ?? null;
+        if (pdfImage) {
+          const innerWidth = maxWidth - MATH_BOX_PAD * 2;
+          const scale = innerWidth / pdfImage.width;
+          const imgH = Math.max(Math.round(pdfImage.height * scale), LINE_HEIGHT);
+          return { type: 'math', pdfImage, lines: [], height: imgH + MATH_BOX_PAD * 2 };
+        }
+        const rendered = formatLatexForDisplay(block.text);
+        const innerWidth = maxWidth - MATH_BOX_PAD * 2;
+        const lines = wrapTextMultiline(rendered, bodyFont, bodySize, innerWidth);
+        return {
+          type: 'math',
+          pdfImage: null,
+          lines,
+          height: Math.max(lines.length * LINE_HEIGHT + MATH_BOX_PAD * 2, LINE_HEIGHT + MATH_BOX_PAD * 2),
+        };
+      }
+      case 'divider':
+        return { type: 'divider', height: 10 };
+      case 'toggle': {
+        const lines = wrapTextMultiline(block.text, bodyFont, bodySize, maxWidth - 14);
+        return {
+          type: 'toggle',
+          lines,
+          height: Math.max(lines.length * LINE_HEIGHT + 6, LINE_HEIGHT + 6),
+        };
+      }
+      case 'list': {
+        const items = block.items.map((item, itemIndex) => {
+          const lines = wrapTextMultiline(item.text, bodyFont, bodySize, maxWidth - (block.kind === 'checklist' ? 18 : 10));
+          return {
+            label: block.ordered ? `${itemIndex + 1}.` : '•',
+            lines,
+            checked: item.checked,
+            height: Math.max(lines.length * LINE_HEIGHT + 1, LINE_HEIGHT + 1),
+          };
+        });
+        return {
+          type: 'list',
+          ordered: block.ordered,
+          kind: block.kind,
+          items,
+          height: items.reduce((sum, item) => sum + item.height, 0) + Math.max(0, (items.length - 1) * BLOCK_INNER_GAP) + 10,
+        };
+      }
+    }
+  });
 }
 
 function uint8ArrayToBase64(bytes: Uint8Array): string {
@@ -222,16 +848,57 @@ function wrapText(text: string, font: PDFFont, size: number, maxWidth: number): 
   return lines;
 }
 
-function sanitizeForWinAnsi(text: string): string {
+function wrapTextMultiline(text: string, font: PDFFont, size: number, maxWidth: number): string[] {
+  const lines: string[] = [];
+  for (const paragraph of text.split('\n')) {
+    if (!paragraph.trim()) {
+      lines.push('');
+      continue;
+    }
+    lines.push(...wrapText(paragraph, font, size, maxWidth));
+  }
+  return lines;
+}
+
+function sanitizeForPdfText(text: string): string {
   return text
-    .replace(/\r\n/g, ' ')
-    .replace(/[\r\n\t]/g, ' ')
+    .replace(/\r\n/g, '\n')
     .replace(/\u00A0/g, ' ')
     .replace(/[\u2018\u2019]/g, "'")
     .replace(/[\u201C\u201D]/g, '"')
     .replace(/[\u2013\u2014]/g, '-')
     .replace(/\u2026/g, '...')
-    .replace(/\u2022/g, '*')
+    .replace(/\u2022/g, '*');
+}
+
+function sanitizeLineText(text: string): string {
+  return sanitizeForPdfText(text)
+    .replace(/[\r\n\t]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+function formatLatexForDisplay(text: string): string {
+  let rendered = sanitizeForPdfText(text).replace(/\r?\n/g, ' ');
+
+  rendered = rendered.replace(/\\left/g, '').replace(/\\right/g, '');
+  rendered = rendered.replace(/\\pm/g, '+/-');
+  rendered = rendered.replace(/\\cdot/g, '*');
+  rendered = rendered.replace(/\\times/g, 'x');
+  rendered = rendered.replace(/\\div/g, '/');
+  rendered = rendered.replace(/\\sqrt\{([^{}]+)\}/g, 'sqrt($1)');
+
+  // Handle a few nested/common fractions by repeatedly applying the pattern.
+  let previous = '';
+  while (previous !== rendered) {
+    previous = rendered;
+    rendered = rendered.replace(/\\frac\{([^{}]+)\}\{([^{}]+)\}/g, '($1) / ($2)');
+  }
+
+  rendered = rendered.replace(/\^([a-zA-Z0-9]+)/g, '^$1');
+  rendered = rendered.replace(/\\[a-zA-Z]+/g, ' ');
+  rendered = rendered.replace(/[{}]/g, '');
+  rendered = rendered.replace(/\s+/g, ' ').trim();
+
+  return rendered;
 }

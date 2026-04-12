@@ -2,6 +2,13 @@
 (function() {
   console.log("ChromePDF content script loaded on:", window.location.href);
 
+  // Skip file:// URLs — injecting into Chrome's native PDF renderer for local files
+  // interferes with its frame setup. Local PDFs can be opened via the toolbar button.
+  if (window.location.href.startsWith('file://')) {
+    console.log("ChromePDF: Skipping file:// URL");
+    return;
+  }
+
   // Check if this looks like a PDF
   const isPdf = window.location.href.endsWith('.pdf') ||
                 document.contentType === 'application/pdf' ||

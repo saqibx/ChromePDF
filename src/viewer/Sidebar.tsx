@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { Annotation, HIGHLIGHT_COLORS } from '../types';
 import { formatDate, truncateText } from '../lib/utils';
+import { RichNoteEditor } from './RichNoteEditor';
+import { NotePreview } from './noteFormatting';
 
 interface SidebarProps {
   annotations: Annotation[];
@@ -56,6 +58,25 @@ export const Sidebar: React.FC<SidebarProps> = ({
     onAnnotationUpdate({ ...ann, resolved: !ann.resolved });
   };
 
+  const handleToggleChecklistItem = (ann: Annotation, lineIndex: number) => {
+    const lines = ann.noteText.replace(/\r\n/g, '\n').split('\n');
+    const line = lines[lineIndex];
+    if (!line) return;
+
+    const checkedMatch = line.match(/^(\s*[-*]\s+\[)([ xX])(\]\s+.*)$/);
+    if (checkedMatch) {
+      const nextMarker = checkedMatch[2].toLowerCase() === 'x' ? ' ' : 'x';
+      lines[lineIndex] = `${checkedMatch[1]}${nextMarker}${checkedMatch[3]}`;
+      onAnnotationUpdate({ ...ann, noteText: lines.join('\n') });
+      return;
+    }
+
+    if (/^\s*[-*]\s+/.test(line)) {
+      lines[lineIndex] = line.replace(/^(\s*[-*]\s+)/, '$1[ ] ');
+      onAnnotationUpdate({ ...ann, noteText: lines.join('\n') });
+    }
+  };
+
   const sortedAnnotations = [...annotations].sort((a, b) => {
     if (a.pageNumber !== b.pageNumber) return a.pageNumber - b.pageNumber;
     return a.highlightRects[0]?.y - b.highlightRects[0]?.y || 0;
@@ -109,11 +130,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
             {editingId === ann.id ? (
               <div className="note-edit" onClick={e => e.stopPropagation()}>
-                <textarea
+                <RichNoteEditor
                   value={editText}
-                  onChange={e => setEditText(e.target.value)}
-                  placeholder="Add your note..."
-                  autoFocus
+                  onChange={setEditText}
+                  onDone={() => handleSaveEdit(ann)}
+                  onCancel={() => setEditingId(null)}
                 />
                 <div className="edit-actions">
                   <button onClick={() => handleSaveEdit(ann)}>Done</button>
@@ -128,7 +149,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   setEditingId(ann.id);
                 }}
               >
-                {ann.noteText || <span className="placeholder">Double-click to add note...</span>}
+                {ann.noteText ? (
+                  <NotePreview
+                    text={ann.noteText}
+                    onToggleChecklistItem={(lineIndex) => handleToggleChecklistItem(ann, lineIndex)}
+                  />
+                ) : (
+                  <span className="placeholder">Double-click to add note...</span>
+                )}
               </div>
             )}
 

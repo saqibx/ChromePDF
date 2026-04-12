@@ -524,7 +524,175 @@
       font-size: 12px;
     }
 
-    .note-edit textarea {
+    .note-preview {
+      display: flex;
+      flex-direction: column;
+      gap: 7px;
+    }
+
+    .note-heading {
+      color: var(--text-primary);
+      font-weight: 700;
+      line-height: 1.2;
+    }
+
+    .note-heading-1 { font-size: 16px; }
+    .note-heading-2 { font-size: 14px; }
+    .note-heading-3 { font-size: 13px; }
+
+    .note-paragraph,
+    .note-quote {
+      white-space: pre-wrap;
+      font-size: 12px;
+      line-height: 1.55;
+    }
+
+    .note-quote {
+      margin: 0;
+      padding: 7px 9px;
+      border-left: 3px solid var(--accent-navy-hi);
+      background: rgba(47, 62, 87, 0.08);
+      color: var(--text-secondary);
+      font-style: italic;
+      border-radius: var(--radius-sm);
+    }
+
+    .note-code {
+      margin: 0;
+      padding: 8px 10px;
+      background: rgba(22, 27, 34, 0.9);
+      color: #f0f4ff;
+      border-radius: var(--radius-sm);
+      font-size: 11px;
+      line-height: 1.5;
+      overflow-x: auto;
+    }
+
+    .note-math-block {
+      padding: 8px 10px;
+      border: 1px solid var(--border-light);
+      border-radius: var(--radius-sm);
+      background: rgba(47, 62, 87, 0.08);
+      overflow-x: auto;
+      text-align: center;
+    }
+
+    .note-math-block .katex-display {
+      margin: 0;
+    }
+
+    .note-inline-math {
+      padding: 1px 4px;
+    }
+
+    .note-math-error {
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 11px;
+      color: var(--accent-plum-hi);
+    }
+
+    .note-inline-code {
+      padding: 1px 4px;
+      border-radius: 4px;
+      background: rgba(22, 27, 34, 0.08);
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+      font-size: 11px;
+    }
+
+    .note-bold { font-weight: 700; }
+
+    .note-strike {
+      text-decoration: line-through;
+      color: var(--text-muted);
+    }
+
+    .note-link {
+      color: var(--accent-navy-hi);
+      text-decoration: underline;
+    }
+
+    .note-list {
+      margin: 0;
+      padding: 4px 0 4px 18px;
+      display: grid;
+      gap: 4px;
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    .note-list li {
+      display: flex;
+      gap: 6px;
+      align-items: flex-start;
+      padding: 1px 0;
+    }
+
+    .note-list li.is-checked span:last-child {
+      text-decoration: line-through;
+      color: var(--text-muted);
+    }
+
+    .note-bullet,
+    .note-checkbox {
+      width: 12px;
+      flex: 0 0 12px;
+      color: var(--accent-navy-hi);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      margin-top: 1px;
+    }
+
+    .note-checkbox-button {
+      appearance: none;
+      background: #ffffff;
+      border: 1.5px solid rgba(255, 255, 255, 0.6);
+      border-radius: 3px;
+      padding: 0;
+      line-height: 1;
+      font-size: 10px;
+      cursor: pointer;
+    }
+
+    .note-checkbox-button:hover {
+      border-color: #ffffff;
+      background: rgba(255, 255, 255, 0.9);
+    }
+
+    .note-toggle {
+      display: flex;
+      gap: 6px;
+      align-items: flex-start;
+      font-size: 12px;
+      line-height: 1.5;
+      color: var(--text-primary);
+    }
+
+    .note-toggle-marker {
+      color: var(--text-muted);
+      font-weight: 700;
+      margin-top: 1px;
+    }
+
+    .note-divider {
+      border: none;
+      border-top: 1px solid var(--border-light);
+      margin: 6px 0;
+    }
+
+    .note-paragraph {
+      padding: 0 2px;
+    }
+
+    .note-edit {
+      position: relative;
+    }
+
+    .rich-note-editor {
+      position: relative;
+    }
+
+    .rich-note-editor textarea {
       width: 100%;
       min-height: 56px;
       padding: 7px 9px;
@@ -538,9 +706,66 @@
       margin-bottom: 7px;
     }
 
-    .note-edit textarea:focus {
+    .rich-note-editor textarea:focus {
       outline: none;
       border-color: var(--accent-plum-hi);
+    }
+
+    .slash-menu {
+      position: absolute;
+      left: 0;
+      right: 0;
+      top: calc(100% - 2px);
+      z-index: 30;
+      background: var(--bg-card);
+      border: 1px solid var(--border-light);
+      border-radius: var(--radius-md);
+      box-shadow: 0 16px 30px rgba(0, 0, 0, 0.18);
+      max-height: 280px;
+      overflow-y: auto;
+      overflow-x: hidden;
+    }
+
+    .slash-menu-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 8px 10px;
+      background: rgba(47, 62, 87, 0.08);
+      border-bottom: 1px solid var(--border-light);
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--text-muted);
+    }
+
+    .slash-menu-item {
+      width: 100%;
+      padding: 8px 10px;
+      border: none;
+      background: transparent;
+      text-align: left;
+      cursor: pointer;
+      border-bottom: 1px solid rgba(0, 0, 0, 0.04);
+    }
+
+    .slash-menu-item:last-child { border-bottom: none; }
+
+    .slash-menu-item.active,
+    .slash-menu-item:hover {
+      background: rgba(47, 62, 87, 0.08);
+    }
+
+    .slash-menu-label {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-primary);
+    }
+
+    .slash-menu-description {
+      font-size: 10px;
+      color: var(--text-muted);
+      margin-top: 2px;
     }
 
     .edit-actions { display: flex; gap: 6px; }

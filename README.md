@@ -1,15 +1,16 @@
 # ChromePDF Viewer
 
-A Chrome extension for annotating PDFs with highlights and notes.
+A Chrome extension for annotating PDFs with highlights and rich notes.
 
 ## Features
 
 - **PDF Rendering**: View PDFs in a custom viewer with full control
 - **Text Highlighting**: Select text and create colored highlights
-- **Notes**: Attach notes to any highlight
+- **Rich Notes**: Attach notes with headings, lists, callouts, quotes, code blocks, toggles, checklists, and LaTeX
+- **Slash Commands**: Type `/` in the note editor to insert formatting blocks and templates
 - **Sidebar**: See all annotations organized by page
 - **Persistent Storage**: Annotations saved locally in IndexedDB
-- **Export**: Generate annotated PDF with notes in right margin
+- **Export**: Generate annotated PDF with notes in right margin, including rendered math
 
 ## Installation
 
@@ -52,6 +53,13 @@ The extension works without icons but will show a default puzzle piece.
 2. Choose a highlight color from the popup
 3. Click "Add Note" to add a note to the highlight
 
+### Writing Notes
+
+- Type `/` in the note editor to open the command menu
+- Use commands to insert headings, bullets, checklists, quotes, callouts, code blocks, math blocks, toggles, links, and templates
+- Use LaTeX inside `$$ ... $$` blocks for display math
+- Click checklist items in the sidebar preview to toggle them on and off
+
 ### Managing Notes
 
 - **Click** a note card to jump to its highlight
@@ -65,6 +73,8 @@ The extension works without icons but will show a default puzzle piece.
 Click "Export PDF" in the toolbar to download a new PDF with:
 - Original content on the left
 - Notes aligned on the right margin
+- Math blocks rendered in the export
+- Checklist items exported as real boxes
 
 ## Development
 
@@ -89,6 +99,7 @@ cp src/content.js dist/
 - **React 18** + TypeScript
 - **PDF.js** for PDF rendering and text layer
 - **pdf-lib** for PDF export
+- **KaTeX** for math rendering
 - **IndexedDB** for local storage
 - **Vite** for bundling
 - **Chrome Extension MV3**
@@ -146,7 +157,8 @@ Annotation {
 ## Known Limitations
 
 - Text selection works best with text-based PDFs (not scanned images)
-- Export creates a new PDF via canvas rendering (original fidelity may vary)
+- Export renders the sidebar separately from the source PDF, so spacing and font matching are approximate
+- Complex LaTeX may render differently in export if the browser cannot rasterize it cleanly
 - Large PDFs may take time to render
 - File:// URLs require manual permission grant in Chrome:
   - Go to `chrome://extensions/`
