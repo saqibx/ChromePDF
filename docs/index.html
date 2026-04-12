@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ChromePDF Privacy Policy</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f7f7f2;
+      --panel: #ffffff;
+      --text: #1f2937;
+      --muted: #5b6472;
+      --line: #d8d5cc;
+      --accent: #1f6feb;
+      --heading: #111827;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: Arial, Helvetica, sans-serif;
+      background: linear-gradient(180deg, #f6f4ee 0%, var(--bg) 100%);
+      color: var(--text);
+      line-height: 1.6;
+    }
+
+    main {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 48px 20px 64px;
+    }
+
+    .page-header,
+    .page-footer {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 0 20px;
+      color: var(--muted);
+    }
+
+    .page-header {
+      padding-top: 28px;
+      margin-bottom: 16px;
+    }
+
+    .brand {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      font-weight: 700;
+      color: var(--heading);
+      letter-spacing: 0.02em;
+      text-decoration: none;
+    }
+
+    .brand-mark {
+      width: 34px;
+      height: 34px;
+      border-radius: 10px;
+      background: linear-gradient(135deg, #1f6feb, #7c3aed);
+      box-shadow: 0 8px 18px rgba(31, 111, 235, 0.25);
+    }
+
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      box-shadow: 0 12px 40px rgba(17, 24, 39, 0.08);
+      padding: 36px;
+    }
+
+    h1 {
+      margin: 0 0 10px;
+      font-size: 2rem;
+      line-height: 1.15;
+      color: var(--heading);
+    }
+
+    .meta {
+      margin: 0 0 28px;
+      color: var(--muted);
+      font-size: 0.95rem;
+    }
+
+    h2 {
+      margin: 28px 0 10px;
+      font-size: 1.1rem;
+      color: var(--heading);
+    }
+
+    p {
+      margin: 0 0 14px;
+    }
+
+    ul {
+      margin: 0 0 16px 22px;
+      padding: 0;
+    }
+
+    li { margin: 0 0 8px; }
+
+    .note {
+      margin-top: 24px;
+      padding: 14px 16px;
+      border-left: 4px solid var(--accent);
+      background: #f2f7ff;
+      color: #20314a;
+      border-radius: 8px;
+    }
+
+    .page-footer {
+      padding-bottom: 28px;
+      font-size: 0.9rem;
+    }
+
+    a { color: var(--accent); }
+  </style>
+</head>
+<body>
+  <header class="page-header">
+    <a class="brand" href="./">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <span>ChromePDF</span>
+    </a>
+  </header>
+  <main>
+    <section class="card">
+      <h1>ChromePDF Privacy Policy</h1>
+      <p class="meta">Effective date: 2026-04-12</p>
+
+      <p>ChromePDF is a local-first PDF annotation extension.</p>
+
+      <h2>What ChromePDF Does</h2>
+      <p>ChromePDF lets you open PDFs, create highlights, add rich notes, and export annotated PDFs. The extension also stores your local workspace so you can reopen documents and continue where you left off.</p>
+
+      <h2>Data We Process</h2>
+      <p>ChromePDF processes the following information:</p>
+      <ul>
+        <li>PDF document bytes that you open in the extension</li>
+        <li>Document metadata such as file name, page count, and source URL when available</li>
+        <li>Highlight positions and colors</li>
+        <li>Selected text from the PDF</li>
+        <li>Note content, including rich notes and LaTeX</li>
+        <li>Local session state such as the current page, zoom level, and active annotation</li>
+      </ul>
+
+      <p>For file-based imports, ChromePDF may temporarily store the file contents in <code>chrome.storage.local</code> so the viewer can reopen them.</p>
+
+      <h2>Where Data Is Stored</h2>
+      <p>ChromePDF stores annotation data and workspace state locally on your device using IndexedDB and Chrome local storage. ChromePDF does not require you to create an online account.</p>
+
+      <h2>How Data Is Used</h2>
+      <p>The data is used only to:</p>
+      <ul>
+        <li>Display and reopen your saved PDF workspace</li>
+        <li>Save highlights, notes, and session state locally</li>
+        <li>Export annotated PDFs that include your notes and highlights</li>
+      </ul>
+
+      <h2>Data Sharing</h2>
+      <p>ChromePDF does not send your PDF content, notes, highlights, or workspace data to ChromePDF servers.</p>
+      <p>ChromePDF does not sell or transfer your data to third parties.</p>
+
+      <h2>Network Access</h2>
+      <p>ChromePDF may fetch a PDF only when you explicitly open a user-provided <code>http://</code> or <code>https://</code> PDF URL in the viewer. This request is user-directed and is used only to load the document you chose to open.</p>
+      <p>ChromePDF does not load remote JavaScript or remote code.</p>
+
+      <h2>Permissions</h2>
+      <p>ChromePDF requests browser permissions required to:</p>
+      <ul>
+        <li>Detect and open PDFs from the current tab</li>
+        <li>Open the viewer for the active PDF</li>
+        <li>Store annotations and local workspace data</li>
+      </ul>
+
+      <h2>Changes</h2>
+      <p>If this policy changes, the updated version will be published with the extension listing and repository documentation.</p>
+
+      <div class="note">
+        GitHub Pages can host this file directly as the policy URL for the Chrome Web Store listing.
+      </div>
+    </section>
+  </main>
+  <footer class="page-footer">
+    <p>ChromePDF is a local-first PDF annotation extension.</p>
+  </footer>
+</body>
+</html>
