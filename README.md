@@ -33,6 +33,8 @@ A Chrome extension for annotating PDFs with highlights and rich notes.
 
 The extension works without icons but will show a default puzzle piece.
 
+Privacy policy: see [privacy-policy.md](./privacy-policy.md).
+
 ## Usage
 
 ### Opening a PDF

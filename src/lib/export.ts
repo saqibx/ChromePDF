@@ -22,18 +22,19 @@ type NoteListItem = {
 };
 
 type LayoutBlock =
-  | { type: 'heading'; level: 1 | 2 | 3; lines: string[]; height: number }
-  | { type: 'paragraph'; lines: string[]; height: number }
-  | { type: 'quote'; lines: string[]; height: number }
-  | { type: 'code'; lines: string[]; height: number }
+  | { type: 'heading'; level: 1 | 2 | 3; lines: string[]; pdfImage: PDFImage | null; height: number }
+  | { type: 'paragraph'; lines: string[]; pdfImage: PDFImage | null; height: number }
+  | { type: 'quote'; lines: string[]; pdfImage: PDFImage | null; height: number }
+  | { type: 'code'; lines: string[]; pdfImage: PDFImage | null; height: number }
   | { type: 'math'; pdfImage: PDFImage | null; lines: string[]; height: number }
   | { type: 'divider'; height: number }
-  | { type: 'toggle'; lines: string[]; height: number }
+  | { type: 'toggle'; lines: string[]; pdfImage: PDFImage | null; height: number }
   | { type: 'list'; ordered: boolean; kind: 'bullet' | 'checklist'; items: LayoutListItem[]; height: number };
 
 type LayoutListItem = {
   label: string;
   lines: string[];
+  pdfImage: PDFImage | null;
   checked?: boolean;
   height: number;
 };
@@ -43,6 +44,8 @@ const BLOCK_INNER_GAP = 3;
 const NOTE_CONTENT_PAD_X = 8;
 const NOTE_CONTENT_PAD_Y = 8;
 const MATH_BOX_PAD = 6;
+const TEXT_IMAGE_PAD_X = 8;
+const TEXT_IMAGE_PAD_Y = 5;
 
 const _fontB64Cache = new Map<string, string>();
 
@@ -184,6 +187,130 @@ function stripFontFaceRules(css: string): string {
   return css.replace(/@font-face\s*\{[\s\S]*?\}/g, '');
 }
 
+function canEncodeText(font: PDFFont, text: string): boolean {
+  try {
+    font.encodeText(text);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function layoutQuotedSelection(
+  pdfDoc: PDFDocument,
+  text: string,
+  font: PDFFont,
+  size: number,
+  maxWidth: number
+): Promise<{ lines: string[]; pdfImage: PDFImage | null; height: number }> {
+  const quoted = `"${text}"`;
+  if (canEncodeText(font, quoted)) {
+    const lines = wrapText(quoted, font, size, maxWidth);
+    return { lines, pdfImage: null, height: Math.max(lines.length * (size + 2), size + 2) };
+  }
+
+  const png = await renderTextToPng(quoted, maxWidth, {
+    fontSize: size,
+    fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+    fontWeight: '400',
+    lineHeight: size + 2,
+    paddingX: 0,
+    paddingY: 0,
+    textAlign: 'left',
+    color: '#666666',
+  });
+  if (!png) return { lines: [quoted], pdfImage: null, height: size + 2 };
+  const image = await pdfDoc.embedPng(png);
+  const scale = Math.min((maxWidth - 2) / image.width, 1);
+  return { lines: [], pdfImage: image, height: Math.max(Math.round(image.height * scale), size + 2) };
+}
+
+async function renderTextToPng(
+  text: string,
+  maxWidthPt: number,
+  options: {
+    fontSize: number;
+    fontFamily: string;
+    fontWeight?: string;
+    fontStyle?: string;
+    lineHeight: number;
+    paddingX?: number;
+    paddingY?: number;
+    textAlign?: 'left' | 'center';
+    color?: string;
+  }
+): Promise<Uint8Array | null> {
+  const container = document.createElement('div');
+  try {
+    const pxWidth = Math.max(1, Math.round(maxWidthPt * 2));
+    const padX = options.paddingX ?? 0;
+    const padY = options.paddingY ?? 0;
+
+    container.style.cssText = [
+      'position:fixed',
+      'top:-9999px',
+      'left:-9999px',
+      `width:${pxWidth}px`,
+      'background:white',
+      `padding:${padY}px ${padX}px`,
+      'box-sizing:border-box',
+      `font-size:${options.fontSize}px`,
+      `line-height:${options.lineHeight}px`,
+      `font-family:${options.fontFamily}`,
+      `font-weight:${options.fontWeight ?? '400'}`,
+      `font-style:${options.fontStyle ?? 'normal'}`,
+      `text-align:${options.textAlign ?? 'left'}`,
+      `color:${options.color ?? '#111111'}`,
+      'white-space:pre-wrap',
+      'overflow-wrap:anywhere',
+      'word-break:break-word',
+    ].join(';');
+    container.textContent = text;
+    document.body.appendChild(container);
+    await new Promise<void>((r) => requestAnimationFrame(() => { requestAnimationFrame(() => r()); }));
+
+    const rect = container.getBoundingClientRect();
+    const w = Math.ceil(rect.width) || pxWidth;
+    const h = Math.ceil(rect.height) || Math.max(options.fontSize + options.lineHeight, 24);
+    const xmlns = 'http://www.w3.org/2000/svg';
+    const xhtml = 'http://www.w3.org/1999/xhtml';
+    const svg = document.createElementNS(xmlns, 'svg');
+    svg.setAttribute('xmlns', xmlns);
+    svg.setAttribute('width', String(w));
+    svg.setAttribute('height', String(h));
+    svg.setAttribute('viewBox', `0 0 ${w} ${h}`);
+
+    const foreignObject = document.createElementNS(xmlns, 'foreignObject');
+    foreignObject.setAttribute('x', '0');
+    foreignObject.setAttribute('y', '0');
+    foreignObject.setAttribute('width', '100%');
+    foreignObject.setAttribute('height', '100%');
+    svg.appendChild(foreignObject);
+
+    const wrapper = document.createElementNS(xhtml, 'div');
+    wrapper.setAttribute('xmlns', xhtml);
+    wrapper.setAttribute('style', `width:${w}px;height:${h}px;background:white;`);
+    wrapper.innerHTML = container.innerHTML;
+    foreignObject.appendChild(wrapper);
+
+    const serialized = new XMLSerializer().serializeToString(svg);
+    const svgDataUrl = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(serialized)}`;
+    const pngDataUrl = await svgDataUrlToPng(svgDataUrl, w, h);
+
+    const b64 = pngDataUrl.split(',')[1];
+    return Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+  } catch (err) {
+    if (err instanceof Error) {
+      console.error('renderTextToPng:', err.name, err.message, err.stack);
+    } else {
+      console.error('renderTextToPng:', err);
+    }
+    return null;
+  } finally {
+    if (container.parentNode) container.parentNode.removeChild(container);
+  }
+}
+
 export async function exportToPDF(
   sourcePdfBytes: ArrayBuffer | Uint8Array,
   annotations: Annotation[],
@@ -253,7 +380,7 @@ export async function exportToPDF(
       const noteW = SIDEBAR_WIDTH - MARGIN * 2;
       const contentX = noteX + NOTE_CONTENT_PAD_X;
       const contentW = noteW - NOTE_CONTENT_PAD_X * 2;
-      const selectedText = sanitizeLineText(ann.selectedText);
+      const selectedText = ann.selectedText.replace(/\r\n/g, '\n');
       const noteBlocks = parseNoteBlocks(ann.noteText);
       const mathImages = new Map<number, PDFImage>();
       for (let bi = 0; bi < noteBlocks.length; bi++) {
@@ -263,13 +390,13 @@ export async function exportToPDF(
           if (png) mathImages.set(bi, await pdfDoc.embedPng(png));
         }
       }
-      const bodyBlocks = layoutNoteBlocks(noteBlocks, helvetica, helveticaBold, NOTE_SIZE, contentW, mathImages);
-      const quoteLines = wrapText(`"${selectedText}"`, helvetica, QUOTE_SIZE, contentW);
+      const quoteRender = await layoutQuotedSelection(pdfDoc, selectedText, helvetica, QUOTE_SIZE, contentW);
+      const bodyBlocks = await layoutNoteBlocks(pdfDoc, noteBlocks, helvetica, helveticaBold, NOTE_SIZE, contentW, mathImages);
 
       const bodyHeight = bodyBlocks.reduce((sum, block) => sum + block.height, 0) + Math.max(0, (bodyBlocks.length - 1) * BLOCK_INNER_GAP);
       const blockH =
         NOTE_CONTENT_PAD_Y +
-        quoteLines.length * (QUOTE_SIZE + 2) +
+        quoteRender.height +
         (bodyBlocks.length ? BLOCK_INNER_GAP + bodyHeight : 0) +
         NOTE_CONTENT_PAD_Y;
 
@@ -295,17 +422,31 @@ export async function exportToPDF(
         opacity: 0.9,
       });
 
-      let ty = cursorY - NOTE_CONTENT_PAD_Y - QUOTE_SIZE;
-      for (const line of quoteLines) {
-        if (ty < MARGIN) break;
-        page.drawText(line, {
+      let ty = cursorY - NOTE_CONTENT_PAD_Y;
+      if (quoteRender.pdfImage) {
+        const dims = quoteRender.pdfImage.scale((contentW - 2) / quoteRender.pdfImage.width);
+        const quoteH = Math.min(dims.height, quoteRender.height);
+        page.drawImage(quoteRender.pdfImage, {
           x: contentX,
-          y: ty,
-          size: QUOTE_SIZE,
-          font: helvetica,
-          color: rgb(0.45, 0.45, 0.45),
+          y: ty - quoteH,
+          width: Math.min(contentW - 2, dims.width),
+          height: quoteH,
         });
-        ty -= QUOTE_SIZE + 2;
+        ty -= quoteH;
+      } else {
+        const quoteLines = quoteRender.lines;
+        ty -= QUOTE_SIZE;
+        for (const line of quoteLines) {
+          if (ty < MARGIN) break;
+          page.drawText(line, {
+            x: contentX,
+            y: ty,
+            size: QUOTE_SIZE,
+            font: helvetica,
+            color: rgb(0.45, 0.45, 0.45),
+          });
+          ty -= QUOTE_SIZE + 2;
+        }
       }
 
       if (bodyBlocks.length) {
@@ -377,32 +518,50 @@ function drawLayoutBlock(
   switch (block.type) {
     case 'heading': {
       const size = block.level === 1 ? 13 : block.level === 2 ? 11.5 : 10.5;
-      let y = topY - padY - size;
-      for (const line of block.lines) {
-        page.drawText(line, {
+      if (block.pdfImage) {
+        page.drawImage(block.pdfImage, {
           x: x + padX,
-          y,
-          size,
-          font: boldFont,
-          color: rgb(0.1, 0.1, 0.1),
+          y: topY - block.height + padY,
+          width: maxWidth - padX * 2,
+          height: block.height - padY * 2,
         });
-        y -= size + 1.5;
+      } else {
+        let y = topY - padY - size;
+        for (const line of block.lines) {
+          page.drawText(line, {
+            x: x + padX,
+            y,
+            size,
+            font: boldFont,
+            color: rgb(0.1, 0.1, 0.1),
+          });
+          y -= size + 1.5;
+        }
       }
       return topY - block.height;
     }
     case 'paragraph': {
-      let y = topY - padY - bodySize;
-      for (const line of block.lines) {
-        if (line) {
-          page.drawText(line, {
-            x: x + padX,
-            y,
-            size: bodySize,
-            font: bodyFont,
-            color: rgb(0.12, 0.12, 0.12),
-          });
+      if (block.pdfImage) {
+        page.drawImage(block.pdfImage, {
+          x: x + padX,
+          y: topY - block.height + padY,
+          width: maxWidth - padX * 2,
+          height: block.height - padY * 2,
+        });
+      } else {
+        let y = topY - padY - bodySize;
+        for (const line of block.lines) {
+          if (line) {
+            page.drawText(line, {
+              x: x + padX,
+              y,
+              size: bodySize,
+              font: bodyFont,
+              color: rgb(0.12, 0.12, 0.12),
+            });
+          }
+          y -= LINE_HEIGHT;
         }
-        y -= LINE_HEIGHT;
       }
       return topY - block.height;
     }
@@ -423,16 +582,25 @@ function drawLayoutBlock(
         height: block.height,
         color: accentColor,
       });
-      let y = topY - padY - bodySize;
-      for (const line of block.lines) {
-        page.drawText(line, {
+      if (block.pdfImage) {
+        page.drawImage(block.pdfImage, {
           x: x + padX,
-          y,
-          size: bodySize,
-          font: bodyFont,
-          color: rgb(0.35, 0.35, 0.35),
+          y: topY - block.height + padY,
+          width: maxWidth - padX * 2,
+          height: block.height - padY * 2,
         });
-        y -= LINE_HEIGHT;
+      } else {
+        let y = topY - padY - bodySize;
+        for (const line of block.lines) {
+          page.drawText(line, {
+            x: x + padX,
+            y,
+            size: bodySize,
+            font: bodyFont,
+            color: rgb(0.35, 0.35, 0.35),
+          });
+          y -= LINE_HEIGHT;
+        }
       }
       return topY - block.height;
     }
@@ -483,16 +651,25 @@ function drawLayoutBlock(
         borderColor: rgb(0.12, 0.14, 0.18),
         borderWidth: 0.5,
       });
-      let y = topY - padY - bodySize;
-      for (const line of block.lines) {
-        page.drawText(line, {
+      if (block.pdfImage) {
+        page.drawImage(block.pdfImage, {
           x: x + padX,
-          y,
-          size: bodySize,
-          font: bodyFont,
-          color: rgb(0.95, 0.95, 0.95),
+          y: topY - block.height + padY,
+          width: maxWidth - padX * 2,
+          height: block.height - padY * 2,
         });
-        y -= LINE_HEIGHT;
+      } else {
+        let y = topY - padY - bodySize;
+        for (const line of block.lines) {
+          page.drawText(line, {
+            x: x + padX,
+            y,
+            size: bodySize,
+            font: bodyFont,
+            color: rgb(0.95, 0.95, 0.95),
+          });
+          y -= LINE_HEIGHT;
+        }
       }
       return topY - block.height;
     }
@@ -506,23 +683,32 @@ function drawLayoutBlock(
       return topY - block.height;
     }
     case 'toggle': {
-      page.drawText('▸', {
-        x: x + padX,
-        y: topY - padY - bodySize,
-        size: bodySize,
-        font: boldFont,
-        color: rgb(0.5, 0.5, 0.5),
-      });
-      let y = topY - padY - bodySize;
-      for (const line of block.lines) {
-        page.drawText(line, {
-          x: x + padX + 10,
-          y,
-          size: bodySize,
-          font: bodyFont,
-          color: rgb(0.12, 0.12, 0.12),
+      if (block.pdfImage) {
+        page.drawImage(block.pdfImage, {
+          x: x + padX,
+          y: topY - block.height + padY,
+          width: maxWidth - padX * 2,
+          height: block.height - padY * 2,
         });
-        y -= LINE_HEIGHT;
+      } else {
+        page.drawText('>', {
+          x: x + padX,
+          y: topY - padY - bodySize,
+          size: bodySize,
+          font: boldFont,
+          color: rgb(0.5, 0.5, 0.5),
+        });
+        let y = topY - padY - bodySize;
+        for (const line of block.lines) {
+          page.drawText(line, {
+            x: x + padX + 10,
+            y,
+            size: bodySize,
+            font: bodyFont,
+            color: rgb(0.12, 0.12, 0.12),
+          });
+          y -= LINE_HEIGHT;
+        }
       }
       return topY - block.height;
     }
@@ -543,11 +729,16 @@ function drawLayoutBlock(
             color: rgb(1, 1, 1),
           });
           if (item.checked) {
-            page.drawText('x', {
-              x: boxX + 1.5,
-              y: boxY + 0.4,
-              size: 7,
-              font: boldFont,
+            page.drawLine({
+              start: { x: boxX + 1.8, y: boxY + 1.8 },
+              end: { x: boxX + boxSize - 1.8, y: boxY + boxSize - 1.8 },
+              thickness: 1.2,
+              color: rgb(0.15, 0.15, 0.15),
+            });
+            page.drawLine({
+              start: { x: boxX + 1.8, y: boxY + boxSize - 1.8 },
+              end: { x: boxX + boxSize - 1.8, y: boxY + 1.8 },
+              thickness: 1.2,
               color: rgb(0.15, 0.15, 0.15),
             });
           }
@@ -562,16 +753,25 @@ function drawLayoutBlock(
         }
 
         const textX = block.kind === 'checklist' ? x + padX + 14 : x + padX + 10;
-        let textY = y - bodySize;
-        for (const line of item.lines) {
-          page.drawText(line, {
+        if (item.pdfImage) {
+          page.drawImage(item.pdfImage, {
             x: textX,
-            y: textY,
-            size: bodySize,
-            font: bodyFont,
-            color: rgb(0.12, 0.12, 0.12),
+            y: y - item.height + 2,
+            width: maxWidth - (block.kind === 'checklist' ? 18 : 10) - 4,
+            height: item.height - 2,
           });
-          textY -= LINE_HEIGHT;
+        } else {
+          let textY = y - bodySize;
+          for (const line of item.lines) {
+            page.drawText(line, {
+              x: textX,
+              y: textY,
+              size: bodySize,
+              font: bodyFont,
+              color: rgb(0.12, 0.12, 0.12),
+            });
+            textY -= LINE_HEIGHT;
+          }
         }
 
         y -= item.height + innerGap;
@@ -715,49 +915,137 @@ function parseNoteBlocks(text: string): NoteBlock[] {
   return blocks;
 }
 
-function layoutNoteBlocks(
+async function layoutNoteBlocks(
+  pdfDoc: PDFDocument,
   blocks: NoteBlock[],
   bodyFont: PDFFont,
   boldFont: PDFFont,
   bodySize: number,
   maxWidth: number,
   mathImages: Map<number, PDFImage> = new Map()
-): LayoutBlock[] {
-  return blocks.map((block, blockIndex) => {
+): Promise<LayoutBlock[]> {
+  const renderedBlocks: LayoutBlock[] = [];
+  for (const [blockIndex, block] of blocks.entries()) {
     switch (block.type) {
       case 'heading': {
         const size = block.level === 1 ? 13 : block.level === 2 ? 11.5 : 10.5;
-        const lines = wrapText(block.text, boldFont, size, maxWidth);
-        return {
-          type: 'heading',
-          level: block.level,
-          lines,
-          height: Math.max(lines.length * (size + 2) + 6, size + 10),
-        };
+        if (canEncodeText(boldFont, block.text)) {
+          const lines = wrapText(block.text, boldFont, size, maxWidth);
+          renderedBlocks.push({
+            type: 'heading',
+            level: block.level,
+            lines,
+            pdfImage: null,
+            height: Math.max(lines.length * (size + 2) + 6, size + 10),
+          });
+        } else {
+          const png = await renderTextToPng(block.text, maxWidth, {
+            fontSize: size,
+            fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+            fontWeight: '700',
+            lineHeight: size + 2,
+            paddingX: TEXT_IMAGE_PAD_X,
+            paddingY: TEXT_IMAGE_PAD_Y,
+            textAlign: 'left',
+            color: '#1a1a1a',
+          });
+          const image = png ? await pdfDoc.embedPng(png) : null;
+          renderedBlocks.push({
+            type: 'heading',
+            level: block.level,
+            lines: [],
+            pdfImage: image,
+            height: image ? Math.max(Math.round((image.height * (maxWidth / image.width))), size + 10) : Math.max(size + 10, size + 4),
+          });
+        }
+        continue;
       }
       case 'paragraph': {
-        const lines = wrapTextMultiline(block.text, bodyFont, bodySize, maxWidth);
-        return {
-          type: 'paragraph',
-          lines,
-          height: Math.max(lines.length * LINE_HEIGHT + 10, LINE_HEIGHT + 10),
-        };
+        if (canEncodeText(bodyFont, block.text)) {
+          const lines = wrapTextMultiline(block.text, bodyFont, bodySize, maxWidth);
+          renderedBlocks.push({
+            type: 'paragraph',
+            lines,
+            pdfImage: null,
+            height: Math.max(lines.length * LINE_HEIGHT + 10, LINE_HEIGHT + 10),
+          });
+        } else {
+          const png = await renderTextToPng(block.text, maxWidth, {
+            fontSize: bodySize,
+            fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+            lineHeight: LINE_HEIGHT,
+            paddingX: TEXT_IMAGE_PAD_X,
+            paddingY: TEXT_IMAGE_PAD_Y,
+            textAlign: 'left',
+            color: '#1f1f1f',
+          });
+          const image = png ? await pdfDoc.embedPng(png) : null;
+          renderedBlocks.push({
+            type: 'paragraph',
+            lines: [],
+            pdfImage: image,
+            height: image ? Math.max(Math.round(image.height * (maxWidth / image.width)), LINE_HEIGHT + 10) : LINE_HEIGHT + 10,
+          });
+        }
+        continue;
       }
       case 'quote': {
-        const lines = wrapTextMultiline(block.text, bodyFont, bodySize, maxWidth - 8);
-        return {
-          type: 'quote',
-          lines,
-          height: Math.max(lines.length * LINE_HEIGHT + 12, LINE_HEIGHT + 12),
-        };
+        if (canEncodeText(bodyFont, block.text)) {
+          const lines = wrapTextMultiline(block.text, bodyFont, bodySize, maxWidth - 8);
+          renderedBlocks.push({
+            type: 'quote',
+            lines,
+            pdfImage: null,
+            height: Math.max(lines.length * LINE_HEIGHT + 12, LINE_HEIGHT + 12),
+          });
+        } else {
+          const png = await renderTextToPng(block.text, maxWidth - 8, {
+            fontSize: bodySize,
+            fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+            lineHeight: LINE_HEIGHT,
+            paddingX: TEXT_IMAGE_PAD_X,
+            paddingY: TEXT_IMAGE_PAD_Y,
+            textAlign: 'left',
+            color: '#5a5a5a',
+          });
+          const image = png ? await pdfDoc.embedPng(png) : null;
+          renderedBlocks.push({
+            type: 'quote',
+            lines: [],
+            pdfImage: image,
+            height: image ? Math.max(Math.round(image.height * ((maxWidth - 8) / image.width)), LINE_HEIGHT + 12) : LINE_HEIGHT + 12,
+          });
+        }
+        continue;
       }
       case 'code': {
-        const lines = block.text.split('\n').map((line) => line || ' ');
-        return {
-          type: 'code',
-          lines,
-          height: Math.max(lines.length * LINE_HEIGHT + 12, LINE_HEIGHT + 12),
-        };
+        if (canEncodeText(bodyFont, block.text)) {
+          const lines = block.text.split('\n').map((line) => line || ' ');
+          renderedBlocks.push({
+            type: 'code',
+            lines,
+            pdfImage: null,
+            height: Math.max(lines.length * LINE_HEIGHT + 12, LINE_HEIGHT + 12),
+          });
+        } else {
+          const png = await renderTextToPng(block.text, maxWidth, {
+            fontSize: bodySize,
+            fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+            lineHeight: LINE_HEIGHT,
+            paddingX: TEXT_IMAGE_PAD_X,
+            paddingY: TEXT_IMAGE_PAD_Y,
+            textAlign: 'left',
+            color: '#f2f2f2',
+          });
+          const image = png ? await pdfDoc.embedPng(png) : null;
+          renderedBlocks.push({
+            type: 'code',
+            lines: [],
+            pdfImage: image,
+            height: image ? Math.max(Math.round(image.height * (maxWidth / image.width)), LINE_HEIGHT + 12) : LINE_HEIGHT + 12,
+          });
+        }
+        continue;
       }
       case 'math': {
         const pdfImage = mathImages.get(blockIndex) ?? null;
@@ -765,48 +1053,97 @@ function layoutNoteBlocks(
           const innerWidth = maxWidth - MATH_BOX_PAD * 2;
           const scale = innerWidth / pdfImage.width;
           const imgH = Math.max(Math.round(pdfImage.height * scale), LINE_HEIGHT);
-          return { type: 'math', pdfImage, lines: [], height: imgH + MATH_BOX_PAD * 2 };
+          renderedBlocks.push({ type: 'math', pdfImage, lines: [], height: imgH + MATH_BOX_PAD * 2 });
+          continue;
         }
         const rendered = formatLatexForDisplay(block.text);
         const innerWidth = maxWidth - MATH_BOX_PAD * 2;
         const lines = wrapTextMultiline(rendered, bodyFont, bodySize, innerWidth);
-        return {
+        renderedBlocks.push({
           type: 'math',
           pdfImage: null,
           lines,
           height: Math.max(lines.length * LINE_HEIGHT + MATH_BOX_PAD * 2, LINE_HEIGHT + MATH_BOX_PAD * 2),
-        };
+        });
+        continue;
       }
       case 'divider':
-        return { type: 'divider', height: 10 };
+        renderedBlocks.push({ type: 'divider', height: 10 });
+        continue;
       case 'toggle': {
-        const lines = wrapTextMultiline(block.text, bodyFont, bodySize, maxWidth - 14);
-        return {
-          type: 'toggle',
-          lines,
-          height: Math.max(lines.length * LINE_HEIGHT + 6, LINE_HEIGHT + 6),
-        };
+        if (canEncodeText(bodyFont, block.text)) {
+          const lines = wrapTextMultiline(block.text, bodyFont, bodySize, maxWidth - 14);
+          renderedBlocks.push({
+            type: 'toggle',
+            lines,
+            pdfImage: null,
+            height: Math.max(lines.length * LINE_HEIGHT + 6, LINE_HEIGHT + 6),
+          });
+        } else {
+          const png = await renderTextToPng(block.text, maxWidth - 14, {
+            fontSize: bodySize,
+            fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+            lineHeight: LINE_HEIGHT,
+            paddingX: TEXT_IMAGE_PAD_X,
+            paddingY: TEXT_IMAGE_PAD_Y,
+            textAlign: 'left',
+            color: '#1f1f1f',
+          });
+          const image = png ? await pdfDoc.embedPng(png) : null;
+          renderedBlocks.push({
+            type: 'toggle',
+            lines: [],
+            pdfImage: image,
+            height: image ? Math.max(Math.round(image.height * ((maxWidth - 14) / image.width)), LINE_HEIGHT + 6) : LINE_HEIGHT + 6,
+          });
+        }
+        continue;
       }
       case 'list': {
-        const items = block.items.map((item, itemIndex) => {
-          const lines = wrapTextMultiline(item.text, bodyFont, bodySize, maxWidth - (block.kind === 'checklist' ? 18 : 10));
-          return {
-            label: block.ordered ? `${itemIndex + 1}.` : '•',
-            lines,
-            checked: item.checked,
-            height: Math.max(lines.length * LINE_HEIGHT + 1, LINE_HEIGHT + 1),
-          };
-        });
-        return {
+        const items: LayoutListItem[] = [];
+        for (const [itemIndex, item] of block.items.entries()) {
+          const textWidth = maxWidth - (block.kind === 'checklist' ? 18 : 10);
+          if (canEncodeText(bodyFont, item.text)) {
+            const lines = wrapTextMultiline(item.text, bodyFont, bodySize, textWidth);
+            items.push({
+              label: block.ordered ? `${itemIndex + 1}.` : '-',
+              lines,
+              pdfImage: null,
+              checked: item.checked,
+              height: Math.max(lines.length * LINE_HEIGHT + 1, LINE_HEIGHT + 1),
+            });
+          } else {
+            const png = await renderTextToPng(item.text, textWidth, {
+              fontSize: bodySize,
+              fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+              lineHeight: LINE_HEIGHT,
+              paddingX: TEXT_IMAGE_PAD_X,
+              paddingY: TEXT_IMAGE_PAD_Y,
+              textAlign: 'left',
+              color: '#1f1f1f',
+            });
+            const image = png ? await pdfDoc.embedPng(png) : null;
+            items.push({
+              label: block.ordered ? `${itemIndex + 1}.` : '-',
+              lines: [],
+              pdfImage: image,
+              checked: item.checked,
+              height: image ? Math.max(Math.round(image.height * (textWidth / image.width)), LINE_HEIGHT + 1) : LINE_HEIGHT + 1,
+            });
+          }
+        }
+        renderedBlocks.push({
           type: 'list',
           ordered: block.ordered,
           kind: block.kind,
           items,
           height: items.reduce((sum, item) => sum + item.height, 0) + Math.max(0, (items.length - 1) * BLOCK_INNER_GAP) + 10,
-        };
+        });
+        continue;
       }
     }
-  });
+  }
+  return renderedBlocks;
 }
 
 function uint8ArrayToBase64(bytes: Uint8Array): string {
@@ -861,14 +1198,7 @@ function wrapTextMultiline(text: string, font: PDFFont, size: number, maxWidth: 
 }
 
 function sanitizeForPdfText(text: string): string {
-  return text
-    .replace(/\r\n/g, '\n')
-    .replace(/\u00A0/g, ' ')
-    .replace(/[\u2018\u2019]/g, "'")
-    .replace(/[\u201C\u201D]/g, '"')
-    .replace(/[\u2013\u2014]/g, '-')
-    .replace(/\u2026/g, '...')
-    .replace(/\u2022/g, '*');
+  return text.replace(/\r\n/g, '\n');
 }
 
 function sanitizeLineText(text: string): string {
