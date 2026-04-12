@@ -6,24 +6,24 @@ ChromePDF is a local-first PDF annotation extension.
 
 ## What ChromePDF Does
 
-ChromePDF lets you open PDFs, create highlights, add rich notes, and export annotated PDFs. The extension also stores your local workspace so you can reopen documents and continue where you left off.
+ChromePDF lets you open a PDF from your device, create highlights, add rich notes, and export an annotated PDF. It also saves your local workspace so you can reopen documents and continue where you left off.
 
 ## Data We Process
 
-ChromePDF processes the following information:
+ChromePDF processes the following information when you use the extension:
 
-- PDF document bytes that you open in the extension
-- Document metadata such as file name, page count, and source URL when available
+- PDF document bytes that you upload into the viewer
+- Document metadata such as file name and page count
 - Highlight positions and colors
 - Selected text from the PDF
 - Note content, including rich notes and LaTeX
 - Local session state such as the current page, zoom level, and active annotation
 
-For file-based imports, ChromePDF may temporarily store the file contents in `chrome.storage.local` so the viewer can reopen them.
+If you open a remote `http://` or `https://` PDF URL in the viewer manually, ChromePDF may fetch that document only because you explicitly asked it to open that URL.
 
 ## Where Data Is Stored
 
-ChromePDF stores annotation data and workspace state locally on your device using IndexedDB and Chrome local storage. ChromePDF does not require you to create an online account.
+ChromePDF stores annotation data, documents, and workspace state locally on your device using IndexedDB and Chrome local storage. ChromePDF does not require you to create an online account.
 
 ## How Data Is Used
 
@@ -41,17 +41,15 @@ ChromePDF does not sell or transfer your data to third parties.
 
 ## Network Access
 
-ChromePDF may fetch a PDF only when you explicitly open a user-provided `http://` or `https://` PDF URL in the viewer. This request is user-directed and is used only to load the document you chose to open.
+ChromePDF does not load remote JavaScript, remote code, or remote Wasm.
 
-ChromePDF does not load remote JavaScript or remote code.
+ChromePDF may fetch a PDF only when you explicitly open a user-provided `http://` or `https://` PDF URL in the viewer. That request is user-directed and is used only to load the document you chose to open.
 
 ## Permissions
 
-ChromePDF requests browser permissions required to:
+ChromePDF only requests browser access needed to store local workspace data and open the extension viewer when you click the extension.
 
-- Detect and open PDFs from the current tab
-- Open the viewer for the active PDF
-- Store annotations and local workspace data
+ChromePDF does not inject code into websites, and it does not require broad host permissions for normal use.
 
 ## Changes
 

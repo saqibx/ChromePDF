@@ -164,7 +164,7 @@ function Root() {
 
       if (storageData?.pendingPdfData) {
         console.log("ChromePDF: Found pending PDF data in storage");
-        chrome.storage.local.remove(['pendingPdfData']);
+        chrome.storage.local.remove(['pendingPdfData', 'pendingPdfName']);
 
         try {
           const binary = atob(storageData.pendingPdfData);
@@ -173,7 +173,7 @@ function Root() {
             bytes[i] = binary.charCodeAt(i);
           }
           setPdfSource(bytes.buffer);
-          setSourceName('Local PDF');
+          setSourceName(storageData.pendingPdfName || 'Local PDF');
           setLoading(false);
           return;
         } catch (err) {

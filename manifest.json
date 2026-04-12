@@ -1,14 +1,12 @@
 {
   "manifest_version": 3,
   "name": "ChromePDF",
-  "description": "Annotate PDFs with highlights, rich notes, and rendered math.",
+  "description": "Upload PDFs to annotate with highlights, rich notes, and rendered math.",
   "version": "1.0.0",
-  "permissions": ["activeTab", "tabs", "storage"],
-  "background": {
-    "service_worker": "background.js"
-  },
+  "permissions": ["storage"],
   "action": {
-    "default_title": "Open PDF Viewer",
+    "default_title": "Upload PDF",
+    "default_popup": "popup.html",
     "default_icon": {
       "16": "assets/icon16.png",
       "32": "assets/icon32.png",
@@ -21,18 +19,5 @@
     "32": "assets/icon32.png",
     "48": "assets/icon48.png",
     "128": "assets/icon128.png"
-  },
-  "content_scripts": [
-    {
-      "matches": ["<all_urls>"],
-      "js": ["content.js"],
-      "run_at": "document_end"
-    }
-  ],
-  "web_accessible_resources": [
-    {
-      "resources": ["viewer.html", "assets/*"],
-      "matches": ["<all_urls>"]
-    }
-  ]
+  }
 }

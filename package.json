@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite build",
-    "build": "tsc && vite build && cp manifest.json dist/ && cp src/content.js dist/ && cp src/background.js dist/ && cp src/assets/icon*.png dist/assets/",
+    "build": "tsc && vite build && cp manifest.json dist/ && cp popup.html dist/ && cp popup.js dist/ && cp src/assets/icon*.png dist/assets/",
     "preview": "vite preview"
   },
   "dependencies": {
