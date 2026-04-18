@@ -3,10 +3,12 @@
   "name": "ChromePDF",
   "description": "Upload PDFs to annotate with highlights, rich notes, and rendered math.",
   "version": "1.0.0",
-  "permissions": ["storage"],
+  "permissions": ["storage", "tabs"],
+  "background": {
+    "service_worker": "background.js"
+  },
   "action": {
-    "default_title": "Upload PDF",
-    "default_popup": "popup.html",
+    "default_title": "Open ChromePDF",
     "default_icon": {
       "16": "assets/icon16.png",
       "32": "assets/icon32.png",

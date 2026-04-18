@@ -1,7 +1,7 @@
 import { PDFDocument, PDFFont, PDFImage, rgb, StandardFonts } from 'pdf-lib';
 import katex from 'katex';
 import katexCss from 'katex/dist/katex.min.css?raw';
-import { Annotation } from '../types';
+import { Annotation, HighlightAnnotation, DrawingAnnotation } from '../types';
 import { CHROMEPDF_SOURCE_FILENAME, createWorkspacePayload } from './workspacePdf';
 
 type PDFColor = ReturnType<typeof rgb>;
@@ -14,7 +14,8 @@ type NoteBlock =
   | { type: 'math'; text: string }
   | { type: 'divider' }
   | { type: 'toggle'; text: string }
-  | { type: 'list'; ordered: boolean; kind: 'bullet' | 'checklist'; items: NoteListItem[] };
+  | { type: 'list'; ordered: boolean; kind: 'bullet' | 'checklist'; items: NoteListItem[] }
+  | { type: 'image'; src: string };
 
 type NoteListItem = {
   text: string;
@@ -29,7 +30,8 @@ type LayoutBlock =
   | { type: 'math'; pdfImage: PDFImage | null; lines: string[]; height: number }
   | { type: 'divider'; height: number }
   | { type: 'toggle'; lines: string[]; pdfImage: PDFImage | null; height: number }
-  | { type: 'list'; ordered: boolean; kind: 'bullet' | 'checklist'; items: LayoutListItem[]; height: number };
+  | { type: 'list'; ordered: boolean; kind: 'bullet' | 'checklist'; items: LayoutListItem[]; height: number }
+  | { type: 'image'; pdfImage: PDFImage | null; height: number };
 
 type LayoutListItem = {
   label: string;
@@ -352,8 +354,11 @@ export async function exportToPDF(
     });
 
     const pageAnnotations = annotations.filter((annotation) => annotation.pageNumber === pageNum);
+    const pageHighlights = pageAnnotations.filter((ann): ann is HighlightAnnotation => ann.type === 'highlight');
+    const pageDrawings = pageAnnotations.filter((ann): ann is DrawingAnnotation => ann.type === 'drawing');
 
-    for (const ann of pageAnnotations) {
+    // Render highlight overlays
+    for (const ann of pageHighlights) {
       const color = hexToRgb(ann.color);
       for (const rect of ann.highlightRects) {
         const rx = (rect.x / 100) * pageW;
@@ -372,9 +377,18 @@ export async function exportToPDF(
       }
     }
 
+    // Render drawing overlays as a PNG image
+    if (pageDrawings.length > 0) {
+      const drawingPng = renderDrawingsToCanvas(pageDrawings, pageW, pageH);
+      if (drawingPng) {
+        const drawingImg = await pdfDoc.embedPng(drawingPng);
+        page.drawImage(drawingImg, { x: 0, y: 0, width: pageW, height: pageH });
+      }
+    }
+
     let cursorY = pageH - MARGIN;
 
-    for (const ann of pageAnnotations) {
+    for (const ann of pageHighlights) {
       const accentColor = hexToRgb(ann.color);
       const noteX = pageW + MARGIN;
       const noteW = SIDEBAR_WIDTH - MARGIN * 2;
@@ -475,7 +489,7 @@ export async function exportToPDF(
     }
   }
 
-  const workspacePayload = createWorkspacePayload(annotations, documentName);
+  const workspacePayload = createWorkspacePayload(stripImageDataFromAnnotations(annotations), documentName);
   const workspaceJson = JSON.stringify(workspacePayload);
   const workspaceB64 = uint8ArrayToBase64(new TextEncoder().encode(workspaceJson));
   pdfDoc.setKeywords(['source:chromepdf', `chromepdf-workspace:${workspaceB64}`]);
@@ -682,6 +696,18 @@ function drawLayoutBlock(
       });
       return topY - block.height;
     }
+    case 'image': {
+      if (block.pdfImage && block.height > 0) {
+        const imgH = block.height - 4;
+        page.drawImage(block.pdfImage, {
+          x,
+          y: topY - block.height + 2,
+          width: maxWidth,
+          height: imgH,
+        });
+      }
+      return topY - block.height;
+    }
     case 'toggle': {
       if (block.pdfImage) {
         page.drawImage(block.pdfImage, {
@@ -847,6 +873,13 @@ function parseNoteBlocks(text: string): NoteBlock[] {
       continue;
     }
 
+    const imageMatch = trimmed.match(/^!\[([^\]]*)\]\(([^)]+)\)$/);
+    if (imageMatch) {
+      blocks.push({ type: 'image', src: imageMatch[2] });
+      index += 1;
+      continue;
+    }
+
     if (trimmed.startsWith('▸')) {
       blocks.push({ type: 'toggle', text: trimmed.slice(1).trim() });
       index += 1;
@@ -895,7 +928,8 @@ function parseNoteBlocks(text: string): NoteBlock[] {
         /^#{1,3}\s+/.test(currentTrimmed) ||
         /^---+$/.test(currentTrimmed) ||
         /^(\d+\.|-|\*)\s+/.test(currentTrimmed) ||
-        currentTrimmed.startsWith('▸')
+        currentTrimmed.startsWith('▸') ||
+        /^!\[[^\]]*\]\([^)]+\)$/.test(currentTrimmed)
       ) {
         break;
       }
@@ -1070,6 +1104,17 @@ async function layoutNoteBlocks(
       case 'divider':
         renderedBlocks.push({ type: 'divider', height: 10 });
         continue;
+      case 'image': {
+        const pdfImage = await dataUrlToPdfImage(pdfDoc, block.src);
+        if (pdfImage) {
+          const scale = maxWidth / pdfImage.width;
+          const imgH = Math.round(pdfImage.height * scale);
+          renderedBlocks.push({ type: 'image', pdfImage, height: imgH + 4 });
+        } else {
+          renderedBlocks.push({ type: 'image', pdfImage: null, height: 0 });
+        }
+        continue;
+      }
       case 'toggle': {
         if (canEncodeText(bodyFont, block.text)) {
           const lines = wrapTextMultiline(block.text, bodyFont, bodySize, maxWidth - 14);
@@ -1146,10 +1191,24 @@ async function layoutNoteBlocks(
   return renderedBlocks;
 }
 
+function stripImageDataFromAnnotations(annotations: Annotation[]): Annotation[] {
+  return annotations.map((ann) => {
+    if (ann.type !== 'highlight' || !ann.noteText.includes('![')) return ann;
+    const stripped = ann.noteText.replace(
+      /!\[([^\]]*)\]\(data:image\/[^;]+;base64,[^)]+\)/g,
+      '![$1](image-in-indexeddb)'
+    );
+    return stripped === ann.noteText ? ann : { ...ann, noteText: stripped };
+  });
+}
+
 function uint8ArrayToBase64(bytes: Uint8Array): string {
+  // Process in 8 KB chunks to avoid building a deeply-nested ConsString tree
+  // that causes V8 to stack-overflow when btoa() tries to flatten it.
+  const CHUNK = 8192;
   let binary = '';
-  for (let i = 0; i < bytes.byteLength; i++) {
-    binary += String.fromCharCode(bytes[i]);
+  for (let i = 0; i < bytes.byteLength; i += CHUNK) {
+    binary += String.fromCharCode(...(bytes.subarray(i, i + CHUNK) as unknown as number[]));
   }
   return btoa(binary);
 }
@@ -1160,6 +1219,87 @@ function clonePdfBytes(sourcePdfBytes: ArrayBuffer | Uint8Array): Uint8Array {
   }
 
   return new Uint8Array(sourcePdfBytes.slice(0));
+}
+
+function renderDrawingsToCanvas(drawingAnns: DrawingAnnotation[], pageW: number, pageH: number): Uint8Array | null {
+  const SCALE = 2;
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.round(pageW * SCALE);
+  canvas.height = Math.round(pageH * SCALE);
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return null;
+
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  for (const ann of drawingAnns) {
+    const sx = ann.viewportWidth ? canvas.width / ann.viewportWidth : SCALE;
+    const sy = ann.viewportHeight ? canvas.height / ann.viewportHeight : SCALE;
+
+    ctx.strokeStyle = ann.color;
+    ctx.fillStyle = ann.color;
+    ctx.lineWidth = ann.strokeWidth * Math.min(sx, sy);
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+
+    for (const path of ann.paths) {
+      if (path.length === 0) continue;
+      const pts = path.map(p => ({ x: p.x * sx, y: p.y * sy }));
+
+      if (pts.length === 1) {
+        ctx.beginPath();
+        ctx.arc(pts[0].x, pts[0].y, ctx.lineWidth / 2, 0, Math.PI * 2);
+        ctx.fill();
+        continue;
+      }
+
+      ctx.beginPath();
+      ctx.moveTo(pts[0].x, pts[0].y);
+      if (pts.length === 2) {
+        ctx.lineTo(pts[1].x, pts[1].y);
+      } else {
+        for (let i = 0; i < pts.length - 1; i++) {
+          const p0 = pts[i];
+          const p1 = pts[i + 1];
+          ctx.quadraticCurveTo(p0.x, p0.y, (p0.x + p1.x) / 2, (p0.y + p1.y) / 2);
+        }
+        const last = pts[pts.length - 1];
+        const prev = pts[pts.length - 2];
+        ctx.quadraticCurveTo(prev.x, prev.y, (prev.x + last.x) / 2, (prev.y + last.y) / 2);
+        ctx.lineTo(last.x, last.y);
+      }
+      ctx.stroke();
+    }
+  }
+
+  const dataUrl = canvas.toDataURL('image/png');
+  const b64 = dataUrl.split(',')[1];
+  return Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+}
+
+async function dataUrlToPdfImage(pdfDoc: PDFDocument, dataUrl: string): Promise<PDFImage | null> {
+  try {
+    // Use a canvas to normalise any image format (webp, gif, etc.) to PNG
+    const png = await new Promise<Uint8Array | null>((resolve) => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        canvas.width = img.naturalWidth;
+        canvas.height = img.naturalHeight;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) { resolve(null); return; }
+        ctx.drawImage(img, 0, 0);
+        const pngUrl = canvas.toDataURL('image/png');
+        const b64 = pngUrl.split(',')[1];
+        resolve(Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)));
+      };
+      img.onerror = () => resolve(null);
+      img.src = dataUrl;
+    });
+    if (!png) return null;
+    return await pdfDoc.embedPng(png);
+  } catch {
+    return null;
+  }
 }
 
 function hexToRgb(hex: string): PDFColor {

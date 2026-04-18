@@ -1,15 +1,23 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { createRoot } from 'react-dom/client';
+import * as pdfjsLib from 'pdfjs-dist';
+import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import { App } from './App';
-import { getAllDocuments, getAllDocumentSessions, getAnnotationsForDocument, initDB } from '../lib/db';
+import {
+  getAllDocuments,
+  getAllDocumentSessions,
+  getAnnotationsForDocument,
+  initDB,
+  deleteDocument,
+} from '../lib/db';
 import { DocumentRecord, DocumentSessionState } from '../types';
 
-// Chrome extension types
+pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
+
 declare const chrome: any;
 
 function getUrlParam(name: string): string | null {
-  const params = new URLSearchParams(window.location.search);
-  return params.get(name);
+  return new URLSearchParams(window.location.search).get(name);
 }
 
 type PendingPdfSource = {
@@ -23,104 +31,185 @@ type SavedDocumentSummary = {
   annotationCount: number;
 };
 
-function UploadView({ onFileSelect, onBack }: { onFileSelect: (source: PendingPdfSource) => void; onBack?: () => void }) {
+// ---------------------------------------------------------------------------
+// DocumentThumbnail
+// ---------------------------------------------------------------------------
+
+function DocumentThumbnail({ doc }: { doc: DocumentRecord }) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [loaded, setLoaded] = useState(false);
+
+  useEffect(() => {
+    if (!doc.file) return;
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const pdf = await pdfjsLib.getDocument({ data: doc.file!.slice(0) }).promise;
+        const page = await pdf.getPage(1);
+        const viewport = page.getViewport({ scale: 1 });
+        const targetWidth = 220;
+        const scale = targetWidth / viewport.width;
+        const scaled = page.getViewport({ scale });
+
+        const canvas = canvasRef.current;
+        if (!canvas || cancelled) return;
+        canvas.width = Math.round(scaled.width);
+        canvas.height = Math.round(scaled.height);
+        const ctx = canvas.getContext('2d')!;
+        await page.render({ canvasContext: ctx, viewport: scaled }).promise;
+        if (!cancelled) setLoaded(true);
+      } catch {
+        // thumbnail stays hidden; placeholder shown instead
+      }
+    })();
+
+    return () => { cancelled = true; };
+  }, [doc.id]);
+
+  return (
+    <div className="doc-card-thumb">
+      {!loaded && (
+        <div className="doc-thumb-placeholder">
+          <span style={{ fontSize: 36 }}>📄</span>
+        </div>
+      )}
+      <canvas ref={canvasRef} style={{ display: loaded ? 'block' : 'none' }} />
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// HomePage
+// ---------------------------------------------------------------------------
+
+function HomePage({
+  documents,
+  onOpen,
+  onFileSelect,
+  onDelete,
+}: {
+  documents: SavedDocumentSummary[];
+  onOpen: (id: string) => void;
+  onFileSelect: (src: PendingPdfSource) => void;
+  onDelete: (id: string) => void;
+}) {
+  const uploadInputRef = useRef<HTMLInputElement>(null);
   const [dragging, setDragging] = useState(false);
-  const fileInputRef = React.useRef<HTMLInputElement>(null);
+
+  const handleFileInput = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) file.arrayBuffer().then((buffer) => onFileSelect({ buffer, name: file.name }));
+    e.target.value = '';
+  }, [onFileSelect]);
 
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     setDragging(false);
     const file = e.dataTransfer.files[0];
     if (file && file.type === 'application/pdf') {
-      console.log("ChromePDF: File dropped:", file.name);
       file.arrayBuffer().then((buffer) => onFileSelect({ buffer, name: file.name }));
-    } else {
-      console.log("ChromePDF: Dropped file is not PDF:", file?.type);
     }
   }, [onFileSelect]);
 
-  const handleFileInput = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    console.log("ChromePDF: File selected:", file?.name, file?.type);
-    if (file) {
-      file.arrayBuffer().then((buffer) => onFileSelect({ buffer, name: file.name }));
-    }
-  }, [onFileSelect]);
+  const hasDocs = documents.length > 0;
 
   return (
-    <div className="drop-zone-container">
-      <div
-        className={`drop-zone ${dragging ? 'dragging' : ''}`}
-        onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
-        onDragLeave={() => setDragging(false)}
-        onDrop={handleDrop}
-      >
-        <div className="drop-zone-icon">📄</div>
-        <h2>Drop a PDF here</h2>
-        <p>or click the button to select a file</p>
-        <input
-          type="file"
-          accept=".pdf"
-          className="file-input"
-          ref={fileInputRef}
-          onChange={handleFileInput}
-        />
-        <button className="upload-btn" onClick={() => fileInputRef.current?.click()}>Select PDF</button>
-        {onBack && (
-          <button className="nav-btn" onClick={onBack}>Back to Library</button>
+    <div className="home-page">
+      {/* Header */}
+      <header className="home-header">
+        <div className="home-logo">
+          <span className="home-logo-icon">📑</span>
+          <span className="home-logo-text">ChromePDF</span>
+        </div>
+        {hasDocs && (
+          <>
+            <input
+              type="file"
+              accept=".pdf"
+              className="file-input"
+              ref={uploadInputRef}
+              onChange={handleFileInput}
+            />
+            <button className="home-upload-btn" onClick={() => uploadInputRef.current?.click()}>
+              + Upload New PDF
+            </button>
+          </>
+        )}
+      </header>
+
+      {/* Content */}
+      <div className="home-content">
+        {hasDocs ? (
+          <>
+            <div className="home-section-header">
+              <span className="home-section-title">Your Documents</span>
+              <span className="home-section-count">{documents.length}</span>
+            </div>
+            <div className="doc-grid">
+              {documents.map(({ document, session, annotationCount }) => (
+                <div
+                  key={document.id}
+                  className="doc-card"
+                  onClick={() => onOpen(document.id)}
+                >
+                  <DocumentThumbnail doc={document} />
+                  <div className="doc-card-info">
+                    <div className="doc-card-title" title={document.name}>{document.name}</div>
+                    <div className="doc-card-meta">
+                      <div className="doc-card-meta-row">
+                        <span>{document.pageCount} page{document.pageCount !== 1 ? 's' : ''}</span>
+                        <span className="doc-card-meta-sep">·</span>
+                        <span>{annotationCount} note{annotationCount !== 1 ? 's' : ''}</span>
+                      </div>
+                      <div className="doc-card-date">
+                        {formatDate(session?.updatedAt ?? document.updatedAt)}
+                      </div>
+                    </div>
+                  </div>
+                  <button
+                    className="doc-card-delete"
+                    title="Delete"
+                    onClick={(e) => { e.stopPropagation(); onDelete(document.id); }}
+                  >
+                    ×
+                  </button>
+                </div>
+              ))}
+            </div>
+          </>
+        ) : (
+          <div className="home-empty">
+            <input
+              type="file"
+              accept=".pdf"
+              className="file-input"
+              ref={uploadInputRef}
+              onChange={handleFileInput}
+            />
+            <div
+              className={`home-empty-zone${dragging ? ' dragging' : ''}`}
+              onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
+              onDragLeave={() => setDragging(false)}
+              onDrop={handleDrop}
+            >
+              <div className="home-empty-icon">📄</div>
+              <h2>No documents yet</h2>
+              <p>Drop a PDF here or click the button below to get started.</p>
+              <button className="home-empty-btn" onClick={() => uploadInputRef.current?.click()}>
+                Upload PDF
+              </button>
+            </div>
+          </div>
         )}
       </div>
     </div>
   );
 }
 
-function LibraryView({
-  documents,
-  onOpen,
-  onUploadNew,
-}: {
-  documents: SavedDocumentSummary[];
-  onOpen: (documentId: string) => void;
-  onUploadNew: () => void;
-}) {
-  return (
-    <div className="drop-zone-container">
-      <div className="drop-zone">
-        <div className="drop-zone-icon">📚</div>
-        <h2>Your Local Work</h2>
-        <p>Open a saved workspace or start a new PDF.</p>
-        <div style={{ width: '100%', maxWidth: 720, marginTop: 16 }}>
-          {documents.map(({ document, session, annotationCount }) => (
-            <button
-              key={document.id}
-              className="nav-btn"
-              style={{
-                width: '100%',
-                display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'center',
-                padding: '14px 16px',
-                marginBottom: 10,
-                textAlign: 'left',
-              }}
-              onClick={() => onOpen(document.id)}
-            >
-              <span>
-                <strong>{document.name}</strong>
-                <br />
-                {annotationCount} notes • {document.pageCount} pages
-              </span>
-              <span>
-                {formatLibraryDate(session?.updatedAt ?? document.updatedAt)}
-              </span>
-            </button>
-          ))}
-        </div>
-        <button className="upload-btn" onClick={onUploadNew}>Open New PDF</button>
-      </div>
-    </div>
-  );
-}
+// ---------------------------------------------------------------------------
+// Utility views
+// ---------------------------------------------------------------------------
 
 function ErrorView({ message }: { message: string }) {
   return (
@@ -140,186 +229,142 @@ function LoadingView() {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Root
+// ---------------------------------------------------------------------------
+
 function Root() {
   const [pdfSource, setPdfSource] = useState<ArrayBuffer | string | null>(null);
   const [sourceName, setSourceName] = useState<string | undefined>(undefined);
   const [sourceUrl, setSourceUrl] = useState<string | undefined>(undefined);
   const [documentId, setDocumentId] = useState<string | null>(null);
   const [savedDocuments, setSavedDocuments] = useState<SavedDocumentSummary[]>([]);
-  const [showUpload, setShowUpload] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     async function loadPdf() {
-      console.log("ChromePDF: Loading PDF, URL:", window.location.href);
       await initDB();
 
-      // Check for pending PDF data from chrome.storage (for file:// URLs)
       const storageData = await new Promise<any>((resolve) => {
-        chrome.storage.local.get(['pendingPdfData'], (result: any) => {
-          resolve(result);
-        });
+        chrome.storage.local.get(['pendingPdfData'], (result: any) => resolve(result));
       });
 
       if (storageData?.pendingPdfData) {
-        console.log("ChromePDF: Found pending PDF data in storage");
         chrome.storage.local.remove(['pendingPdfData', 'pendingPdfName']);
-
         try {
           const binary = atob(storageData.pendingPdfData);
           const bytes = new Uint8Array(binary.length);
-          for (let i = 0; i < binary.length; i++) {
-            bytes[i] = binary.charCodeAt(i);
-          }
+          for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
           setPdfSource(bytes.buffer);
           setSourceName(storageData.pendingPdfName || 'Local PDF');
-          setLoading(false);
-          return;
-        } catch (err) {
-          console.error("ChromePDF: Failed to decode PDF data:", err);
+        } catch {
           setError('Failed to decode PDF data');
-          setLoading(false);
-          return;
         }
-      }
-
-      // Check URL params
-      const urlParam = getUrlParam('url');
-      const modeParam = getUrlParam('mode');
-
-      console.log("ChromePDF: URL param:", urlParam, "Mode param:", modeParam);
-
-      // If mode=local, show upload dialog (for file:// URLs that we couldn't fetch)
-      if (modeParam === 'local') {
-        console.log("ChromePDF: Local mode - showing upload dialog");
-        setShowUpload(true);
         setLoading(false);
         return;
       }
 
-      if (!urlParam) {
-        console.log("ChromePDF: No URL param - checking saved documents");
-        const documents = await loadSavedDocuments();
-        setSavedDocuments(documents);
-        setShowUpload(documents.length === 0);
+      const urlParam = getUrlParam('url');
+      const modeParam = getUrlParam('mode');
+
+      if (modeParam === 'local' || !urlParam) {
+        if (!urlParam) {
+          const docs = await loadSavedDocuments();
+          setSavedDocuments(docs);
+        }
         setLoading(false);
         return;
       }
 
       try {
         if (urlParam.startsWith('data:')) {
-          console.log("ChromePDF: Loading data URL");
           const base64 = urlParam.split(',')[1];
           const binary = atob(base64);
           const bytes = new Uint8Array(binary.length);
-          for (let i = 0; i < binary.length; i++) {
-            bytes[i] = binary.charCodeAt(i);
-          }
+          for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
           setPdfSource(bytes.buffer);
         } else if (urlParam.startsWith('http') || urlParam.startsWith('blob:')) {
-          console.log("ChromePDF: Fetching web URL");
           const response = await fetch(urlParam);
           if (!response.ok) throw new Error('Failed to fetch PDF');
-          const buffer = await response.arrayBuffer();
-          setPdfSource(buffer);
+          setPdfSource(await response.arrayBuffer());
           setSourceUrl(urlParam);
           setSourceName(getNameFromUrl(urlParam));
         } else {
-          // Invalid URL, show upload
-          console.log("ChromePDF: Invalid URL - showing upload");
-          setShowUpload(true);
-          setLoading(false);
-          return;
+          // unrecognized param — fall back to home
         }
       } catch (err) {
-        console.error("ChromePDF: Error loading PDF:", err);
         setError('Failed to load PDF: ' + (err instanceof Error ? err.message : 'Unknown error'));
-      } finally {
-        setLoading(false);
       }
+      setLoading(false);
     }
 
     loadPdf();
   }, []);
 
+  const handleDelete = useCallback(async (id: string) => {
+    await deleteDocument(id);
+    setSavedDocuments((prev) => prev.filter((s) => s.document.id !== id));
+  }, []);
+
+  const handleFileSelect = useCallback(({ buffer, name }: PendingPdfSource) => {
+    setPdfSource(buffer);
+    setSourceName(name);
+  }, []);
+
   if (loading) return <LoadingView />;
   if (error) return <ErrorView message={error} />;
-  if (documentId) {
-    return <App documentId={documentId} />;
-  }
-  if (!pdfSource) {
-    if (!showUpload && savedDocuments.length > 0) {
-      return (
-        <LibraryView
-          documents={savedDocuments}
-          onOpen={setDocumentId}
-          onUploadNew={() => setShowUpload(true)}
-        />
-      );
-    }
+  if (documentId) return <App documentId={documentId} />;
+  if (pdfSource) return <App pdfSource={pdfSource} sourceName={sourceName} sourceUrl={sourceUrl} />;
 
-    return (
-      <UploadView
-        onFileSelect={({ buffer, name }) => {
-          setPdfSource(buffer);
-          setSourceName(name);
-        }}
-        onBack={!showUpload || savedDocuments.length === 0 ? undefined : () => setShowUpload(false)}
-      />
-    );
-  }
-
-  return <App pdfSource={pdfSource} sourceName={sourceName} sourceUrl={sourceUrl} />;
+  return (
+    <HomePage
+      documents={savedDocuments}
+      onOpen={setDocumentId}
+      onFileSelect={handleFileSelect}
+      onDelete={handleDelete}
+    />
+  );
 }
 
 const container = document.getElementById('root');
 if (container) {
-  const root = createRoot(container);
-  root.render(<Root />);
+  createRoot(container).render(<Root />);
 }
 
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
 async function loadSavedDocuments(): Promise<SavedDocumentSummary[]> {
-  const [documents, sessions] = await Promise.all([
-    getAllDocuments(),
-    getAllDocumentSessions(),
-  ]);
+  const [documents, sessions] = await Promise.all([getAllDocuments(), getAllDocumentSessions()]);
+  const sessionMap = new Map(sessions.map((s) => [s.documentId, s]));
 
-  const sessionMap = new Map(sessions.map((session) => [session.documentId, session]));
-
-  const documentSummaries = await Promise.all(
+  const summaries = await Promise.all(
     documents.map(async (document) => {
       const annotations = await getAnnotationsForDocument(document.id);
-      return {
-        document,
-        session: sessionMap.get(document.id),
-        annotationCount: annotations.length,
-      };
+      return { document, session: sessionMap.get(document.id), annotationCount: annotations.length };
     })
   );
 
-  return documentSummaries.sort((a, b) => {
-    const aUpdatedAt = a.session?.updatedAt ?? a.document.updatedAt;
-    const bUpdatedAt = b.session?.updatedAt ?? b.document.updatedAt;
-    return new Date(bUpdatedAt).getTime() - new Date(aUpdatedAt).getTime();
+  return summaries.sort((a, b) => {
+    const aDate = a.session?.updatedAt ?? a.document.updatedAt;
+    const bDate = b.session?.updatedAt ?? b.document.updatedAt;
+    return new Date(bDate).getTime() - new Date(aDate).getTime();
   });
 }
 
 function getNameFromUrl(urlString: string): string {
   try {
-    const url = new URL(urlString);
-    const parts = url.pathname.split('/');
+    const parts = new URL(urlString).pathname.split('/');
     return decodeURIComponent(parts[parts.length - 1] || 'Document');
   } catch {
     return 'Document';
   }
 }
 
-function formatLibraryDate(isoString: string): string {
+function formatDate(isoString: string): string {
   return new Date(isoString).toLocaleString('en-US', {
-    month: 'short',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
+    month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
   });
 }

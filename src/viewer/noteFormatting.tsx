@@ -10,7 +10,8 @@ type NoteBlock =
   | { type: 'math'; text: string }
   | { type: 'divider' }
   | { type: 'list'; ordered: boolean; kind: 'bullet' | 'checklist'; items: ListItem[] }
-  | { type: 'toggle'; text: string };
+  | { type: 'toggle'; text: string }
+  | { type: 'image'; src: string; alt: string };
 
 type ListItem = {
   text: string;
@@ -95,6 +96,13 @@ function parseBlocks(text: string): NoteBlock[] {
       continue;
     }
 
+    const imageMatch = trimmed.match(/^!\[([^\]]*)\]\(([^)]+)\)$/);
+    if (imageMatch) {
+      blocks.push({ type: 'image', alt: imageMatch[1], src: imageMatch[2] });
+      index += 1;
+      continue;
+    }
+
     if (trimmed.startsWith('▸')) {
       blocks.push({ type: 'toggle', text: trimmed.slice(1).trim() });
       index += 1;
@@ -144,7 +152,8 @@ function parseBlocks(text: string): NoteBlock[] {
         /^#{1,3}\s+/.test(currentTrimmed) ||
         /^---+$/.test(currentTrimmed) ||
         /^(\d+\.|-|\*)\s+/.test(currentTrimmed) ||
-        currentTrimmed.startsWith('▸')
+        currentTrimmed.startsWith('▸') ||
+        /^!\[[^\]]*\]\([^)]+\)$/.test(currentTrimmed)
       ) {
         break;
       }
@@ -205,6 +214,12 @@ function renderBlock(
     }
     case 'divider':
       return <hr key={index} className="note-divider" />;
+    case 'image':
+      return (
+        <div key={index} className="note-image-block">
+          <img src={block.src} alt={block.alt || 'image'} className="note-image" />
+        </div>
+      );
     case 'toggle':
       return (
         <div key={index} className="note-toggle">

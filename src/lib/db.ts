@@ -197,7 +197,7 @@ export async function updateAnnotationNote(id: string, noteText: string): Promis
     getRequest.onerror = () => reject(getRequest.error);
     getRequest.onsuccess = () => {
       const ann = getRequest.result as Annotation;
-      if (ann) {
+      if (ann && ann.type === 'highlight') {
         ann.noteText = noteText;
         ann.updatedAt = new Date().toISOString();
         const putRequest = store.put(ann);

@@ -3,7 +3,7 @@ import * as pdfjsLib from 'pdfjs-dist';
 import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import { PDFPage } from './PDFPage';
 import { Sidebar } from './Sidebar';
-import { DocumentRecord, Annotation, NormalizedRect, HIGHLIGHT_COLORS } from '../types';
+import { DocumentRecord, Annotation, DrawingAnnotation, NormalizedRect, Point, HIGHLIGHT_COLORS, DRAWING_COLORS, STROKE_WIDTHS } from '../types';
 import { initDB, saveDocument, getDocument, getAnnotationsForDocument, saveAnnotation, deleteAnnotation, getDocumentSession, saveDocumentSession, deleteAnnotationsForDocument } from '../lib/db';
 import { generateId, hashArrayBuffer, debounce } from '../lib/utils';
 import { exportToPDF } from '../lib/export';
@@ -35,6 +35,13 @@ export const App: React.FC<AppProps> = ({ pdfSource, documentId: initialDocId, s
   const [selectedColor, setSelectedColor] = useState(HIGHLIGHT_COLORS[0].value);
   const [sessionReady, setSessionReady] = useState(false);
   const pageRefs = useRef<Map<number, HTMLDivElement>>(new Map());
+
+  // Drawing state
+  const [drawingMode, setDrawingMode] = useState<'highlight' | 'draw'>('highlight');
+  const [drawingColor, setDrawingColor] = useState(DRAWING_COLORS[0].value);
+  const [drawingStrokeWidth, setDrawingStrokeWidth] = useState(STROKE_WIDTHS[1]);
+  const [currentDrawingPath, setCurrentDrawingPath] = useState<Point[]>([]);
+  const [isDrawingEnabled, setIsDrawingEnabled] = useState(false);
 
   useEffect(() => {
     const init = async () => {
@@ -93,10 +100,7 @@ export const App: React.FC<AppProps> = ({ pdfSource, documentId: initialDocId, s
             if (importedWorkspace) {
               await deleteAnnotationsForDocument(hash);
               for (const annotation of importedWorkspace.annotations) {
-                await saveAnnotation({
-                  ...annotation,
-                  documentId: hash,
-                });
+                await saveAnnotation({ ...annotation, documentId: hash });
               }
             }
 
@@ -121,7 +125,7 @@ export const App: React.FC<AppProps> = ({ pdfSource, documentId: initialDocId, s
               file: workspaceBytes,
               createdAt: now,
               updatedAt: now,
-              pageCount: pdfDoc.numPages
+              pageCount: pdfDoc.numPages,
             };
 
             await saveDocument(docRecord);
@@ -130,15 +134,9 @@ export const App: React.FC<AppProps> = ({ pdfSource, documentId: initialDocId, s
 
             if (importedWorkspace) {
               for (const annotation of importedWorkspace.annotations) {
-                await saveAnnotation({
-                  ...annotation,
-                  documentId: hash,
-                });
+                await saveAnnotation({ ...annotation, documentId: hash });
               }
-              setAnnotations(importedWorkspace.annotations.map((annotation) => ({
-                ...annotation,
-                documentId: hash,
-              })));
+              setAnnotations(importedWorkspace.annotations.map(a => ({ ...a, documentId: hash })));
             } else {
               setAnnotations([]);
             }
@@ -157,9 +155,7 @@ export const App: React.FC<AppProps> = ({ pdfSource, documentId: initialDocId, s
   }, [pdfSource, initialDocId, sourceName, sourceUrl]);
 
   const debouncedSaveAnnotation = useCallback(
-    debounce((ann: Annotation) => {
-      saveAnnotation(ann).catch(console.error);
-    }, 500),
+    debounce((ann: Annotation) => { saveAnnotation(ann).catch(console.error); }, 500),
     []
   );
 
@@ -182,7 +178,6 @@ export const App: React.FC<AppProps> = ({ pdfSource, documentId: initialDocId, s
     rects: NormalizedRect[]
   ) => {
     if (!documentRecord) return;
-
     setPendingSelection({ pageNumber, selectedText, rects });
   }, [documentRecord]);
 
@@ -192,6 +187,7 @@ export const App: React.FC<AppProps> = ({ pdfSource, documentId: initialDocId, s
     const { pageNumber, selectedText, rects } = pendingSelection;
 
     const newAnnotation: Annotation = {
+      type: 'highlight',
       id: generateId(),
       documentId: documentRecord.id,
       pageNumber,
@@ -201,7 +197,7 @@ export const App: React.FC<AppProps> = ({ pdfSource, documentId: initialDocId, s
       color: selectedColor,
       resolved: false,
       createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString()
+      updatedAt: new Date().toISOString(),
     };
 
     setAnnotations(prev => [...prev, newAnnotation]);
@@ -233,29 +229,60 @@ export const App: React.FC<AppProps> = ({ pdfSource, documentId: initialDocId, s
 
   const handleExport = useCallback(async () => {
     if (!pdf) return;
-
     try {
       const sourcePdfBytes = await pdf.getData();
       await exportToPDF(sourcePdfBytes, annotations, documentRecord?.name);
     } catch (err) {
       console.error('Export failed:', err);
-      const message = err instanceof Error ? err.message : 'Unknown error';
-      alert(`Export failed: ${message}`);
+      alert(`Export failed: ${err instanceof Error ? err.message : 'Unknown error'}`);
     }
-  }, [pdf, annotations]);
+  }, [pdf, annotations, documentRecord]);
+
+  // Drawing handlers
+  const handleDrawingStart = useCallback((point: Point) => {
+    setCurrentDrawingPath([point]);
+  }, []);
+
+  const handleDrawingMove = useCallback((point: Point) => {
+    setCurrentDrawingPath(prev => [...prev, point]);
+  }, []);
+
+  const handleDrawingEnd = useCallback((pageNum: number, finalPath: Point[], viewportWidth: number, viewportHeight: number) => {
+    if (finalPath.length >= 2 && documentRecord) {
+      const newDrawing: DrawingAnnotation = {
+        type: 'drawing',
+        id: generateId(),
+        documentId: documentRecord.id,
+        pageNumber: pageNum,
+        paths: [finalPath],
+        color: drawingColor,
+        strokeWidth: drawingStrokeWidth,
+        viewportWidth,
+        viewportHeight,
+        resolved: false,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+      setAnnotations(prev => [...prev, newDrawing]);
+      saveAnnotation(newDrawing).catch(console.error);
+    }
+    setCurrentDrawingPath([]);
+  }, [documentRecord, drawingColor, drawingStrokeWidth]);
+
+  const handleToggleDrawingMode = useCallback(() => {
+    setIsDrawingEnabled(prev => !prev);
+    setDrawingMode(prev => prev === 'highlight' ? 'draw' : 'highlight');
+  }, []);
 
   useEffect(() => {
     const pageEl = pageRefs.current.get(currentPage);
-    if (pageEl) {
-      pageEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    }
+    if (pageEl) pageEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }, [currentPage]);
 
   useEffect(() => {
     if (!sessionReady || !documentRecord) return;
-
     debouncedSaveSession(documentRecord.id, currentPage, scale, activeAnnotationId);
-  }, [sessionReady, documentRecord, currentPage, scale, activeAnnotationId, annotations, debouncedSaveSession]);
+  }, [sessionReady, documentRecord, currentPage, scale, activeAnnotationId, debouncedSaveSession]);
 
   if (loading) {
     return (
@@ -322,17 +349,53 @@ export const App: React.FC<AppProps> = ({ pdfSource, documentId: initialDocId, s
           </span>
         </div>
         <div className="toolbar-right">
-          <div className="color-picker-toolbar">
-            {HIGHLIGHT_COLORS.map(c => (
-              <button
-                key={c.value}
-                className={`color-btn ${selectedColor === c.value ? 'selected' : ''}`}
-                style={{ backgroundColor: c.value }}
-                onClick={() => setSelectedColor(c.value)}
-                title={c.name}
-              />
-            ))}
-          </div>
+          {!isDrawingEnabled && (
+            <div className="color-picker-toolbar">
+              {HIGHLIGHT_COLORS.map(c => (
+                <button
+                  key={c.value}
+                  className={`color-btn ${selectedColor === c.value ? 'selected' : ''}`}
+                  style={{ backgroundColor: c.value }}
+                  onClick={() => setSelectedColor(c.value)}
+                  title={c.name}
+                />
+              ))}
+            </div>
+          )}
+          <button
+            className={`draw-btn ${isDrawingEnabled ? 'active' : ''}`}
+            onClick={handleToggleDrawingMode}
+            title={isDrawingEnabled ? 'Exit drawing mode' : 'Enter drawing mode'}
+          >
+            ✏️ Draw
+          </button>
+          {isDrawingEnabled && (
+            <>
+              <div className="color-picker-toolbar">
+                {DRAWING_COLORS.map(c => (
+                  <button
+                    key={c.value}
+                    className={`color-btn ${drawingColor === c.value ? 'selected' : ''}`}
+                    style={{ backgroundColor: c.value }}
+                    onClick={() => setDrawingColor(c.value)}
+                    title={c.name}
+                  />
+                ))}
+              </div>
+              <div className="stroke-width-picker">
+                {STROKE_WIDTHS.map(w => (
+                  <button
+                    key={w}
+                    className={`stroke-btn ${drawingStrokeWidth === w ? 'selected' : ''}`}
+                    onClick={() => setDrawingStrokeWidth(w)}
+                    title={`${w}px`}
+                  >
+                    <span style={{ width: Math.min(w * 2, 16), height: Math.min(w * 2, 16) }} />
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
           <button className="export-btn" onClick={handleExport}>
             Export PDF
           </button>
@@ -367,9 +430,7 @@ export const App: React.FC<AppProps> = ({ pdfSource, documentId: initialDocId, s
             {Array.from({ length: pdf.numPages }, (_, i) => i + 1).map(pageNum => (
               <div
                 key={pageNum}
-                ref={el => {
-                  if (el) pageRefs.current.set(pageNum, el);
-                }}
+                ref={el => { if (el) pageRefs.current.set(pageNum, el); }}
                 id={`page-${pageNum}`}
               >
                 <PDFPage
@@ -380,6 +441,14 @@ export const App: React.FC<AppProps> = ({ pdfSource, documentId: initialDocId, s
                   onTextSelection={handleTextSelection}
                   onAnnotationClick={handleAnnotationSelect}
                   activeAnnotationId={activeAnnotationId}
+                  drawingMode={drawingMode}
+                  drawingColor={drawingColor}
+                  drawingStrokeWidth={drawingStrokeWidth}
+                  currentDrawingPath={currentDrawingPath}
+                  onDrawingStart={handleDrawingStart}
+                  onDrawingMove={handleDrawingMove}
+                  onDrawingEnd={handleDrawingEnd}
+                  isDrawingEnabled={isDrawingEnabled}
                 />
               </div>
             ))}
@@ -405,7 +474,6 @@ function truncateText(text: string, maxLength: number): string {
 
 function getDocumentNameFromSource(sourceUrl?: string): string | undefined {
   if (!sourceUrl) return undefined;
-
   try {
     const url = new URL(sourceUrl);
     const parts = url.pathname.split('/');

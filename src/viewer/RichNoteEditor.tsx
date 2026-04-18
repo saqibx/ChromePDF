@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 type SlashCommand = {
   id: string;
@@ -191,12 +191,63 @@ const COMMANDS: SlashCommand[] = [
     keywords: ['fold', 'section', 'disclosure'],
     apply: ({ value, triggerStart, triggerEnd }) => insertAtRange(value, triggerStart, triggerEnd, '▸ ', 2),
   },
+  {
+    id: 'images',
+    label: 'Image',
+    description: 'Upload or paste an image',
+    keywords: ['photo', 'picture', 'upload', 'embed'],
+    apply: ({ value, triggerStart, triggerEnd }) => insertAtRange(value, triggerStart, triggerEnd, '', 0),
+  },
 ];
 
 export function RichNoteEditor({ value, onChange, onDone, onCancel }: RichNoteEditorProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const imageInputRef = useRef<HTMLInputElement>(null);
+  const pendingInsertRef = useRef<{ start: number; end: number } | null>(null);
   const [slashState, setSlashState] = useState<SlashState | null>(null);
   const [activeIndex, setActiveIndex] = useState(0);
+
+  const insertImageDataUrl = useCallback((dataUrl: string, insertStart: number, insertEnd: number) => {
+    const marker = `![image](${dataUrl})`;
+    const before = value.slice(0, insertStart);
+    const after = value.slice(insertEnd);
+    const prefix = before.length > 0 && !before.endsWith('\n') ? '\n' : '';
+    const suffix = after.length > 0 && !after.startsWith('\n') ? '\n' : '';
+    const nextValue = `${before}${prefix}${marker}${suffix}${after}`;
+    onChange(nextValue);
+    const caret = insertStart + prefix.length + marker.length;
+    requestAnimationFrame(() => {
+      const el = textareaRef.current;
+      if (!el) return;
+      el.focus();
+      el.setSelectionRange(caret, caret);
+    });
+  }, [value, onChange]);
+
+  const handleImageFile = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    const { start, end } = pendingInsertRef.current ?? { start: value.length, end: value.length };
+    pendingInsertRef.current = null;
+    const reader = new FileReader();
+    reader.onload = () => insertImageDataUrl(reader.result as string, start, end);
+    reader.readAsDataURL(file);
+  }, [value.length, insertImageDataUrl]);
+
+  const handlePaste = useCallback((e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const imageItem = Array.from(e.clipboardData.items).find((item) => item.type.startsWith('image/'));
+    if (!imageItem) return;
+    e.preventDefault();
+    const blob = imageItem.getAsFile();
+    if (!blob) return;
+    const el = textareaRef.current;
+    const start = el?.selectionStart ?? value.length;
+    const end = el?.selectionEnd ?? value.length;
+    const reader = new FileReader();
+    reader.onload = () => insertImageDataUrl(reader.result as string, start, end);
+    reader.readAsDataURL(blob);
+  }, [value.length, insertImageDataUrl]);
 
   const filteredCommands = useMemo(() => {
     if (!slashState) return COMMANDS;
@@ -231,6 +282,18 @@ export function RichNoteEditor({ value, onChange, onDone, onCancel }: RichNoteEd
   const applyCommand = (command: SlashCommand) => {
     if (!slashState) return;
 
+    setSlashState(null);
+    setActiveIndex(0);
+
+    if (command.id === 'images') {
+      pendingInsertRef.current = { start: slashState.start, end: slashState.end };
+      // strip the typed /images text from the textarea first
+      const cleaned = `${value.slice(0, slashState.start)}${value.slice(slashState.end)}`;
+      onChange(cleaned);
+      requestAnimationFrame(() => imageInputRef.current?.click());
+      return;
+    }
+
     const textarea = textareaRef.current;
     const selectionStart = textarea?.selectionStart ?? slashState.end;
     const selectionEnd = textarea?.selectionEnd ?? slashState.end;
@@ -243,8 +306,6 @@ export function RichNoteEditor({ value, onChange, onDone, onCancel }: RichNoteEd
     });
 
     onChange(result.nextValue);
-    setSlashState(null);
-    setActiveIndex(0);
 
     window.requestAnimationFrame(() => {
       const el = textareaRef.current;
@@ -302,11 +363,19 @@ export function RichNoteEditor({ value, onChange, onDone, onCancel }: RichNoteEd
 
   return (
     <div className="rich-note-editor">
+      <input
+        ref={imageInputRef}
+        type="file"
+        accept="image/*"
+        className="file-input"
+        onChange={handleImageFile}
+      />
       <textarea
         ref={textareaRef}
         value={value}
         onChange={handleChange}
         onKeyDown={handleKeyDown}
+        onPaste={handlePaste}
         onClick={(event) => syncSlashState(event.currentTarget.value, event.currentTarget.selectionStart ?? event.currentTarget.value.length)}
         onKeyUp={(event) => syncSlashState(event.currentTarget.value, event.currentTarget.selectionStart ?? event.currentTarget.value.length)}
         onSelect={(event) => syncSlashState(event.currentTarget.value, event.currentTarget.selectionStart ?? event.currentTarget.value.length)}
